@@ -1,12 +1,15 @@
 # Release automation: https://knope.tech
 # Contributors describe user-facing changes with `knope document-change` (a file in .changeset/).
 # .github/workflows/prepare-release.yml runs `prepare-release` on every push to main and opens
-# the "Release vX.Y.Z" PR; merging it runs .github/workflows/release.yml (pack, `release`,
-# upload).
+# the "Release vX.Y.Z" PR; merging it runs .github/workflows/release.yml (Velopack pack, then
+# `release`).
 
 [package]
 versioned_files = ["app/Cargo.toml", "Cargo.lock"]
 changelog = "CHANGELOG.md"
+# Filled by release.yml (the Velopack installer, packages and feed). With assets, `knope
+# release` creates the GitHub release as a draft and publishes it after the uploads.
+assets = "artifacts/*"
 
 # Versions and the changelog come from change files only, not from commit messages.
 [changes]

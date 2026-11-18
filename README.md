@@ -43,8 +43,17 @@ cargo xtask assets          # download Twemoji and Emojibase, write assets/gener
 cargo run -p emoji-picker
 ```
 
-`cargo test --workspace` runs the tests. See `CLAUDE.md` for the full command list and the
-architecture, and `TESTING.md` for the manual desktop checks.
+Other useful commands:
+
+```sh
+cargo test --workspace                                  # unit tests
+cargo clippy --workspace --all-targets -- -D warnings   # lints, as in CI
+cargo build --release -p emoji-picker                   # release build in target/release
+```
+
+The workspace has three crates: `core` (platform-free logic and its tests), `app` (the
+Windows app, with the Slint UI in `app/ui/`) and `xtask` (asset build tooling, not shipped).
+`TESTING.md` lists the manual desktop checks.
 
 ## Contributing
 
