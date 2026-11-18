@@ -206,8 +206,9 @@ Same flags as `release.yml`:
 cargo build --release -p emoji-picker --features diag
 mkdir -p target/vpk-pack && cp target/release/emoji-picker.exe target/vpk-pack/
 $VPK pack --packId emoji-picker --packVersion 0.0.1 --packDir target/vpk-pack \
-  --mainExe emoji-picker.exe --icon assets/generated/app.ico --outputDir "$OUT"
-ls -l "$OUT"   # emoji-picker-win-Setup.exe: below 30 MB, target 15 MB (2026-11-18: 30,742,993 bytes)
+  --mainExe emoji-picker.exe --icon assets/generated/app.ico --runtime win-x64 --noPortable \
+  --outputDir "$OUT"
+ls -l "$OUT"   # emoji-picker-win-Setup.exe: about 30 MB accepted, target 15 MB (2026-11-18: 30,480,205 bytes)
 ```
 
 - [ ] Run `$OUT/emoji-picker-win-Setup.exe`: it installs to
@@ -222,7 +223,8 @@ ls -l "$OUT"   # emoji-picker-win-Setup.exe: below 30 MB, target 15 MB (2026-11-
 
       ```sh
       $VPK pack --packId emoji-picker --packVersion 0.0.2 --packDir target/vpk-pack \
-        --mainExe emoji-picker.exe --icon assets/generated/app.ico --outputDir "$OUT"
+        --mainExe emoji-picker.exe --icon assets/generated/app.ico --runtime win-x64 \
+        --noPortable --outputDir "$OUT"
       EMOJI_PICKER_UPDATE_DIR="$(cygpath -w "$OUT")" "$LOCALAPPDATA/emoji-picker/current/emoji-picker.exe"
       ```
 

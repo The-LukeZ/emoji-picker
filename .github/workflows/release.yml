@@ -91,7 +91,9 @@ jobs:
             --packVersion "${{ steps.version.outputs.version }}" \
             --packDir target/vpk-pack \
             --mainExe emoji-picker.exe \
-            --icon assets/generated/app.ico
+            --icon assets/generated/app.ico \
+            --runtime win-x64 \
+            --noPortable
       - name: Collect the new and changed files
         # Releases/ also holds the previous release's full package (from vpk download), which
         # is already attached to that release.
