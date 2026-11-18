@@ -146,6 +146,8 @@ fn main() {
         .backend_name("winit".into())
         .renderer_name("software".into())
         .with_winit_window_attributes_hook(picker::window_attributes)
+        // Without this the Win+. hook is skipped while one of our windows is in front.
+        .with_winit_custom_application_handler(win::raw_input::NoRawInput::default())
         .select()
     {
         log!("selecting the Slint backend failed: {e}");

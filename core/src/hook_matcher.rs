@@ -57,10 +57,15 @@ impl WinPeriodMatcher {
 
     /// Like [`Self::on_key`], but first repairs state that missed key-ups left behind.
     ///
-    /// Key-ups can fail to reach the hook (seen while our picker takes the foreground). On a
-    /// fresh period press (`phys.period` still up, so not autorepeat) the matcher rebuilds
-    /// its state from the physical Win keys, so a stale flag can neither eat a period nor
-    /// turn the next Win+. into "autorepeat". `phys` is only read for a period key-down.
+    /// Key-ups can fail to reach the hook (Windows skips it, for example, while a process that
+    /// registered for raw keyboard input has the foreground). Two fresh presses repair it:
+    /// - a period press (`phys.period` still up, so not autorepeat) rebuilds the state from
+    ///   the physical Win keys, so a stale flag can neither eat a period nor turn the next
+    ///   Win+. into "autorepeat";
+    /// - a Win press while no Win key is physically down starts a new press from scratch, so
+    ///   a stale `opened` cannot mask (and so suppress) the Start menu on its release.
+    ///
+    /// `phys` is only read for period and Win key-downs.
     pub fn on_key_checked(
         &mut self,
         vk: u16,
@@ -68,8 +73,12 @@ impl WinPeriodMatcher {
         injected: bool,
         phys: Physical,
     ) -> HookAction {
-        if vk == VK_OEM_PERIOD && down && !injected && !phys.period {
-            self.resync(phys.lwin, phys.rwin);
+        if down && !injected {
+            match vk {
+                VK_OEM_PERIOD if !phys.period => self.resync(phys.lwin, phys.rwin),
+                VK_LWIN | VK_RWIN if !phys.lwin && !phys.rwin => self.resync(false, false),
+                _ => {}
+            }
         }
         self.on_key(vk, down, injected)
     }
@@ -199,6 +208,62 @@ mod tests {
             m.on_key_checked(VK_OEM_PERIOD, false, false, WIN_HELD),
             HookAction::Swallow
         );
+        assert_eq!(
+            m.on_key_checked(VK_LWIN, false, false, p),
+            HookAction::MaskThenPass
+        );
+    }
+
+    #[test]
+    fn stale_opened_then_fresh_bare_win_passes_without_mask() {
+        let mut m = WinPeriodMatcher::default();
+        let p = Physical::default();
+        m.on_key_checked(VK_LWIN, true, false, p);
+        assert_eq!(
+            m.on_key_checked(VK_OEM_PERIOD, true, false, WIN_HELD),
+            HookAction::Open
+        );
+        // The period and Win key-ups are missed (`opened`, `lwin`, `period_down` stale).
+        // A fresh bare Win press and release must reach the Start menu unmasked.
+        assert_eq!(m.on_key_checked(VK_LWIN, true, false, p), HookAction::Pass);
+        assert_eq!(m.on_key_checked(VK_LWIN, false, false, p), HookAction::Pass);
+        // And the next plain period passes.
+        assert_eq!(
+            m.on_key_checked(VK_OEM_PERIOD, true, false, p),
+            HookAction::Pass
+        );
+    }
+
+    #[test]
+    fn win_autorepeat_keeps_open_press() {
+        let mut m = WinPeriodMatcher::default();
+        let p = Physical::default();
+        m.on_key_checked(VK_LWIN, true, false, p);
+        assert_eq!(
+            m.on_key_checked(VK_OEM_PERIOD, true, false, WIN_HELD),
+            HookAction::Open
+        );
+        // Win autorepeat (already physically down) must not forget the Open.
+        assert_eq!(
+            m.on_key_checked(VK_LWIN, true, false, WIN_HELD),
+            HookAction::Pass
+        );
+        m.on_key_checked(VK_OEM_PERIOD, false, false, WIN_HELD);
+        assert_eq!(
+            m.on_key_checked(VK_LWIN, false, false, p),
+            HookAction::MaskThenPass
+        );
+    }
+
+    #[test]
+    fn second_win_down_keeps_open_press() {
+        let mut m = WinPeriodMatcher::default();
+        let p = Physical::default();
+        m.on_key_checked(VK_LWIN, true, false, p);
+        m.on_key_checked(VK_OEM_PERIOD, true, false, WIN_HELD);
+        m.on_key_checked(VK_OEM_PERIOD, false, false, WIN_HELD);
+        // RWIN goes down while LWIN is held: same press, the mask stays due.
+        m.on_key_checked(VK_RWIN, true, false, WIN_HELD);
         assert_eq!(
             m.on_key_checked(VK_LWIN, false, false, p),
             HookAction::MaskThenPass

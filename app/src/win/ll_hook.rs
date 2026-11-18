@@ -256,8 +256,10 @@ fn on_key(kb: &KBDLLHOOKSTRUCT, wp: WPARAM) -> bool {
     let own = kb.dwExtraInfo == OWN_INPUT_MARKER;
     let injected = own || ((kb.flags & LLKHF_INJECTED).0 != 0 && !TEST_MODE.with(|t| t.get()));
     let vk = u16::try_from(kb.vkCode).unwrap_or(0);
-    // Physical state is only needed for a period key-down (the matcher's resync rule).
-    let phys = if vk == VK_OEM_PERIOD && down {
+    // Physical state is only needed for period and Win key-downs (the matcher's resync rules).
+    // The hook runs before the event updates the async state, so the pressed key reads up
+    // unless this is autorepeat.
+    let phys = if down && matches!(vk, VK_OEM_PERIOD | VK_LWIN | VK_RWIN) {
         Physical {
             lwin: key_down(VK_LWIN),
             rwin: key_down(VK_RWIN),
