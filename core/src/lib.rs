@@ -3,6 +3,7 @@
 pub mod config;
 pub mod geometry;
 pub mod hotkey;
+pub mod picker_state;
 pub mod policy;
 pub mod recents;
 pub mod search;
