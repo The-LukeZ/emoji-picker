@@ -1,0 +1,90 @@
+// First-run dialog: choose the hotkey. Shown while `hotkey` is missing from the config.
+// Enter or OK applies the selected option; closing the window applies Win+. (preselected).
+
+import { Button, Palette } from "std-widgets.slint";
+import { HotkeyChooser } from "settings.slint";
+
+export component FirstRunWindow inherits Window {
+    in property <bool> dark;
+    in-out property <int> choice: 0;
+    in property <string> custom-text;
+    in property <bool> recording;
+    in property <string> error-text;
+    in property <string> warning-text;
+    // OK is disabled while Custom has no valid recording.
+    in property <bool> can-accept: true;
+    callback chosen(int);
+    callback record();
+    callback confirm();
+
+    title: "Emoji picker setup";
+    preferred-width: 460px;
+    background: Palette.background;
+
+    init => {
+        Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;
+        chooser.focus-choice();
+    }
+    // Keyboard focus on the selected option (called again once the window is shown).
+    public function focus-choice() {
+        chooser.focus-choice();
+    }
+    changed dark => {
+        Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Return && root.can-accept && !root.recording) {
+                root.confirm();
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
+
+            Text {
+                text: "Welcome to Emoji picker";
+                color: Palette.foreground;
+                font-size: 18px;
+                font-weight: 600;
+            }
+
+            Text {
+                text: "Choose the hotkey that opens the emoji picker. You can change it later in the settings (right-click the tray icon).";
+                color: Palette.foreground;
+                wrap: word-wrap;
+            }
+
+            chooser := HotkeyChooser {
+                choice <=> root.choice;
+                custom-text: root.custom-text;
+                recording: root.recording;
+                error-text: root.error-text;
+                warning-text: root.warning-text;
+                chosen(i) => {
+                    root.chosen(i);
+                }
+                record => {
+                    root.record();
+                }
+            }
+
+            HorizontalLayout {
+                alignment: end;
+
+                Button {
+                    text: "OK";
+                    primary: true;
+                    enabled: root.can-accept && !root.recording;
+                    clicked => {
+                        root.confirm();
+                    }
+                }
+            }
+        }
+    }
+}

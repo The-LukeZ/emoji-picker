@@ -24,9 +24,9 @@ use emoji_core::recents::Recents;
 use emoji_core::search::SearchIndex;
 use emoji_core::table::{cell_rect, Category, EmojiTable, SpriteRef};
 use slint::winit_030::winit::event::{MouseScrollDelta, WindowEvent};
-use slint::winit_030::winit::platform::windows::WindowAttributesExtWindows;
+use slint::winit_030::winit::platform::windows::{IconExtWindows, WindowAttributesExtWindows};
 use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use slint::winit_030::winit::window::WindowAttributes;
+use slint::winit_030::winit::window::{Icon, WindowAttributes};
 use slint::winit_030::{EventResult, WinitWindowAccessor};
 use slint::{
     ComponentHandle, Image, Model, ModelNotify, ModelRc, ModelTracker, PhysicalPosition,
@@ -55,10 +55,16 @@ static NEXT_OWNER: AtomicIsize = AtomicIsize::new(0);
 
 /// Winit attributes hook, installed on the backend in `main`. The picker window gets a hidden
 /// owner window: owned popups have no taskbar button and no Alt+Tab entry, and unlike an
-/// extended style this survives winit rewriting the style on every show and hide.
+/// extended style this survives winit rewriting the style on every show and hide. Other
+/// windows (settings, setup, about) get the app icon from the exe resources.
 pub fn window_attributes(attrs: WindowAttributes) -> WindowAttributes {
     match NEXT_OWNER.swap(0, Ordering::SeqCst) {
-        0 => attrs,
+        0 => {
+            // Resource ordinal 1 is the icon embedded by `build.rs`.
+            let small = Icon::from_resource(1, None).ok();
+            let big = Icon::from_resource(1, None).ok();
+            attrs.with_window_icon(small).with_taskbar_icon(big)
+        }
         owner => attrs.with_owner_window(owner),
     }
 }
@@ -387,7 +393,7 @@ impl Picker {
         self.inner.open(ev);
     }
 
-    #[allow(dead_code)] // called by the settings window (Task 15)
+    /// Adopts `cfg` without saving it (see [`Picker::save_config`]).
     pub fn set_config(&self, cfg: Arc<Config>) {
         let inner = &self.inner;
         *inner.cfg.borrow_mut() = cfg;
@@ -398,6 +404,33 @@ impl Picker {
             inner.apply_size();
             inner.refresh_all();
             inner.place();
+        }
+    }
+
+    /// Saves `cfg` to the config file and adopts it. The picker is the only writer of the
+    /// config file: settings changes come through here, so they are built on the newest copy
+    /// (tone and size changed in the picker included).
+    pub fn save_config(&self, cfg: Arc<Config>) {
+        let path = &self.inner.config_path;
+        if let Err(e) = cfg.save(path) {
+            log!("picker: saving {} failed: {e}", path.display());
+        }
+        self.set_config(cfg);
+    }
+
+    /// Forgets the recently used emoji: clears the list and deletes `recents.txt`. Turning
+    /// recents on again later starts with an empty list.
+    pub fn forget_recents(&self) {
+        let inner = &self.inner;
+        inner.recents.borrow_mut().items.clear();
+        inner.recent.borrow_mut().clear();
+        // Nothing left to load: the file is gone.
+        inner.recents_loaded.set(true);
+        let path = recents_path(&inner.config_path);
+        match std::fs::remove_file(&path) {
+            Ok(()) => log!("picker: deleted {}", path.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => log!("picker: deleting {} failed: {e}", path.display()),
         }
     }
 
@@ -412,7 +445,6 @@ impl Picker {
     }
 
     /// Milliseconds from the hotkey to the first presented frame of the last open.
-    #[allow(dead_code)] // shown in About (Task 15)
     pub fn last_open_ms(&self) -> Option<u32> {
         self.inner.last_open_ms.get()
     }

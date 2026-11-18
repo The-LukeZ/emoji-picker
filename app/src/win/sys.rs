@@ -25,7 +25,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::foreground::exe_path;
 
-const RUN_KEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
+const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN_VALUE: PCWSTR = w!("emoji-picker");
 
 /// Private bytes (commit charge) of this process.
@@ -74,12 +74,28 @@ fn win32(err: WIN32_ERROR) -> io::Result<()> {
     }
 }
 
+/// The HKCU key that holds the Run value. Debug and `diag` builds honour
+/// `EMOJI_PICKER_RUN_KEY` (a key path under HKCU) so tests never touch the real Run key.
+fn run_key() -> Vec<u16> {
+    let mut key = RUN_KEY.to_string();
+    if cfg!(any(debug_assertions, feature = "diag")) {
+        if let Some(k) = std::env::var("EMOJI_PICKER_RUN_KEY")
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+        {
+            key = k;
+        }
+    }
+    key.encode_utf16().chain(Some(0)).collect()
+}
+
 /// Adds or removes the HKCU Run value that starts the current exe at sign-in.
-#[allow(dead_code)] // used by settings (Task 14)
 pub fn set_autostart(on: bool) -> io::Result<()> {
+    let key = run_key();
+    let key = PCWSTR(key.as_ptr());
     if !on {
-        // SAFETY: static key and value names.
-        let err = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE) };
+        // SAFETY: key is a null-terminated buffer that outlives the call; static value name.
+        let err = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key, RUN_VALUE) };
         return if err == ERROR_FILE_NOT_FOUND {
             Ok(())
         } else {
@@ -91,11 +107,12 @@ pub fn set_autostart(on: bool) -> io::Result<()> {
         .encode_utf16()
         .chain(Some(0))
         .collect();
-    // SAFETY: data is a null-terminated UTF-16 buffer and the size is its length in bytes.
+    // SAFETY: key and data are null-terminated UTF-16 buffers that outlive the call, and the
+    // size is the length of data in bytes.
     let err = unsafe {
         RegSetKeyValueW(
             HKEY_CURRENT_USER,
-            RUN_KEY,
+            key,
             RUN_VALUE,
             REG_SZ.0,
             Some(data.as_ptr().cast()),
@@ -121,7 +138,6 @@ unsafe extern "system" fn collect_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
 }
 
 /// Lowercased, deduplicated exe file names of all visible top-level windows.
-#[allow(dead_code)] // used by the blocklist picker in settings (Task 14)
 pub fn visible_window_exes() -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     // SAFETY: the callback only uses lparam while EnumWindows runs, and names outlives the call.

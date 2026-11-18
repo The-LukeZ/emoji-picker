@@ -86,7 +86,6 @@ pub enum UiEvent {
 
 #[derive(Debug)]
 pub enum ServiceCmd {
-    #[allow(dead_code)] // sent by the settings window (Task 14)
     SetConfig(Arc<Config>),
     #[allow(dead_code)] // sent by the settings window (Task 14)
     SetPaused(bool),
@@ -100,7 +99,7 @@ pub enum ServiceCmd {
 pub struct ServiceHandle {
     thread_id: u32,
     tx: Sender<ServiceCmd>,
-    join: Option<JoinHandle<()>>,
+    join: std::cell::RefCell<Option<JoinHandle<()>>>,
 }
 
 impl ServiceHandle {
@@ -112,12 +111,14 @@ impl ServiceHandle {
         }
     }
 
-    /// Stops the service (removes the tray icon, releases the hotkey) and waits for it.
-    pub fn shutdown(mut self) {
+    /// Stops the service (removes the tray icon, releases the hotkey) and waits for it. Later
+    /// calls do nothing.
+    pub fn shutdown(&self) {
+        let Some(join) = self.join.borrow_mut().take() else {
+            return;
+        };
         self.send(ServiceCmd::Shutdown);
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
-        }
+        let _ = join.join();
     }
 }
 
@@ -136,7 +137,7 @@ pub fn spawn_service(
     ServiceHandle {
         thread_id,
         tx,
-        join: Some(join),
+        join: std::cell::RefCell::new(Some(join)),
     }
 }
 

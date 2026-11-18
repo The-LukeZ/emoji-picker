@@ -15,6 +15,7 @@ macro_rules! log {
 
 mod assets;
 mod picker;
+mod settings;
 mod win;
 
 /// Generated Slint components (root `app/ui/app.slint`).
@@ -23,7 +24,6 @@ mod ui {
     slint::include_modules!();
 }
 
-use std::cell::{OnceCell, RefCell};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -36,23 +36,13 @@ use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, PostMessageW, HWND_MESSAGE};
 
 use picker::{InsertRequest, OpenRequest, Picker};
-use win::service::{
-    spawn_service, ServiceCmd, ServiceHandle, UiEvent, SERVICE_CLASS, WM_OPEN_SETTINGS,
-};
-
-thread_local! {
-    /// The picker, created once on the UI thread before the event loop runs.
-    static PICKER: OnceCell<Picker> = const { OnceCell::new() };
-    /// The service thread handle, for balloons from the UI thread; taken at shutdown.
-    static SERVICE: RefCell<Option<ServiceHandle>> = const { RefCell::new(None) };
-}
+use settings::{with_state, AppState};
+use win::service::{spawn_service, ServiceCmd, UiEvent, SERVICE_CLASS, WM_OPEN_SETTINGS};
 
 /// Called by the picker after it hid: types or pastes the pick into the target window, or
 /// copies it and tells the user why it could not be inserted.
 fn on_insert(req: InsertRequest) {
-    let cfg = PICKER
-        .with(|p| p.get().map(Picker::config))
-        .unwrap_or_default();
+    let cfg = with_state(AppState::config).unwrap_or_default();
     let started = Instant::now();
     let result = win::insert::insert(&req, cfg.insert_mode, &cfg.paste_exes);
     log!(
@@ -62,13 +52,11 @@ fn on_insert(req: InsertRequest) {
         started.elapsed()
     );
     if let Some(text) = result.balloon_text() {
-        SERVICE.with(|s| {
-            if let Some(service) = s.borrow().as_ref() {
-                service.send(ServiceCmd::Balloon {
-                    title: "Emoji picker".into(),
-                    text: text.into(),
-                });
-            }
+        with_state(|s| {
+            s.service.send(ServiceCmd::Balloon {
+                title: "Emoji picker".into(),
+                text: text.into(),
+            });
         });
     }
 }
@@ -127,27 +115,42 @@ fn on_ui_event(event: UiEvent) {
                 "ui: OpenPicker target={target:#x} caret={caret:?} cursor={cursor:?} after {:?} (private {private_kb} KB)",
                 at.elapsed()
             );
-            PICKER.with(|p| {
-                if let Some(p) = p.get() {
-                    p.open(OpenRequest {
-                        target,
-                        caret,
-                        cursor,
-                        at,
-                        via_hook,
-                    });
-                }
+            with_state(|s| {
+                s.picker.open(OpenRequest {
+                    target,
+                    caret,
+                    cursor,
+                    at,
+                    via_hook,
+                });
             });
         }
         UiEvent::HotkeySwitched(hotkey) => {
             log!("ui: hotkey switched to {hotkey}");
             // The picker's config is the newest copy (it saves tone and size): change only
             // the hotkey there and save, so nothing else is reverted.
-            PICKER.with(|p| {
-                if let Some(p) = p.get() {
-                    p.save_hotkey(hotkey);
+            with_state(|s| {
+                s.picker.save_hotkey(hotkey);
+                s.refresh_settings();
+            });
+        }
+        UiEvent::OpenSettings => {
+            log!("ui: OpenSettings (private {private_kb} KB)");
+            with_state(|s| {
+                if s.config().hotkey.is_none() {
+                    settings::show_first_run(s);
+                } else {
+                    settings::show_settings(s);
                 }
             });
+        }
+        UiEvent::OpenAbout => {
+            log!("ui: OpenAbout (private {private_kb} KB)");
+            with_state(settings::show_about);
+        }
+        UiEvent::HotkeyFailed => {
+            log!("ui: HotkeyFailed");
+            with_state(AppState::on_hotkey_failed);
         }
         UiEvent::Quit => {
             log!("ui: Quit (private {private_kb} KB)");
@@ -155,8 +158,6 @@ fn on_ui_event(event: UiEvent) {
             win::insert::flush_pending_restore();
             let _ = slint::quit_event_loop();
         }
-        // The settings and about windows come with Task 14.
-        other => log!("ui: {other:?} (private {private_kb} KB)"),
     }
 }
 
@@ -199,10 +200,7 @@ fn main() {
     {
         picker.selftest(cycles);
     }
-    PICKER.with(|p| {
-        let _ = p.set(picker);
-    });
-
+    let first_run = config.hotkey.is_none();
     let handle = spawn_service(config, |event| {
         let text = format!("{event:?}");
         if let Err(e) = slint::invoke_from_event_loop(move || on_ui_event(event)) {
@@ -215,12 +213,13 @@ fn main() {
             text,
         });
     }
-    SERVICE.with(|s| *s.borrow_mut() = Some(handle));
+    settings::install(AppState::new(handle, picker));
+    if first_run {
+        with_state(settings::show_first_run);
+    }
 
     if let Err(e) = slint::run_event_loop_until_quit() {
         log!("event loop failed: {e}");
     }
-    if let Some(handle) = SERVICE.with(|s| s.borrow_mut().take()) {
-        handle.shutdown();
-    }
+    with_state(|s| s.service.shutdown());
 }

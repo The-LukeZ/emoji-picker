@@ -1,0 +1,644 @@
+// Settings and About windows, created on demand by `app/src/settings.rs` and dropped on close.
+//
+// All settings apply at once (no OK button): every change calls back into Rust, which saves
+// the config. Esc closes the window.
+
+import { Button, CheckBox, ComboBox, GroupBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
+
+// One option of a radio list. Space selects it, Up and Down move to the neighbour (the parent
+// handles `arrow` by focusing and selecting it). Enter is left to the window.
+export component Radio inherits Rectangle {
+    in property <string> text;
+    in property <bool> checked;
+    callback activated();
+    callback arrow(int);
+
+    min-height: 28px;
+    horizontal-stretch: 1;
+    border-radius: 4px;
+    border-width: fs.has-focus ? 2px : 0px;
+    border-color: Palette.foreground;
+    forward-focus: fs;
+
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        spacing: 8px;
+
+        Rectangle {
+            width: 18px;
+            height: 18px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 9px;
+            border-width: root.checked ? 5px : 1px;
+            border-color: root.checked ? Palette.accent-background : Palette.foreground;
+        }
+
+        Text {
+            text: root.text;
+            color: Palette.foreground;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+    }
+
+    TouchArea {
+        clicked => {
+            fs.focus();
+            root.activated();
+        }
+    }
+
+    fs := FocusScope {
+        key-pressed(e) => {
+            if (e.text == " ") {
+                root.activated();
+                return accept;
+            }
+            if (e.text == Key.UpArrow) {
+                root.arrow(-1);
+                return accept;
+            }
+            if (e.text == Key.DownArrow) {
+                root.arrow(1);
+                return accept;
+            }
+            reject
+        }
+    }
+}
+
+// The three hotkey choices: 0 Win+., 1 Ctrl+Shift+Space, 2 Custom (recorded).
+export component HotkeyChooser inherits VerticalLayout {
+    in-out property <int> choice;
+    // Text of the recorded combination ("" before the first recording).
+    in property <string> custom-text;
+    in property <bool> recording;
+    // Rejection reason of the last recording, shown in red.
+    in property <string> error-text;
+    // AltGr warning for Ctrl+Alt combinations.
+    in property <string> warning-text;
+    // The current hotkey could not be registered (or is invalid): the field turns red.
+    in property <bool> failed;
+    in property <string> failed-text;
+    callback chosen(int);
+    callback record();
+
+    property <color> red: Palette.color-scheme == ColorScheme.dark ? #ff99a4 : #c42b1c;
+
+    spacing: 4px;
+
+    public function focus-choice() {
+        if (root.choice == 1) {
+            r1.focus();
+        } else if (root.choice == 2) {
+            r2.focus();
+        } else {
+            r0.focus();
+        }
+    }
+
+    function go(i: int) {
+        if (i == 0) {
+            r0.focus();
+        } else if (i == 1) {
+            r1.focus();
+        } else {
+            r2.focus();
+        }
+        root.chosen(i);
+    }
+
+    frame := Rectangle {
+        border-radius: 4px;
+        border-width: root.failed ? 2px : 0px;
+        border-color: root.red;
+
+        VerticalLayout {
+            padding: root.failed ? 4px : 0px;
+            spacing: 2px;
+
+            r0 := Radio {
+                text: "Replace the Windows emoji picker: Win+.";
+                checked: root.choice == 0;
+                activated => {
+                    root.go(0);
+                }
+                arrow(d) => {
+                    root.go(d > 0 ? 1 : 2);
+                }
+            }
+
+            r1 := Radio {
+                text: "Ctrl+Shift+Space";
+                checked: root.choice == 1;
+                activated => {
+                    root.go(1);
+                }
+                arrow(d) => {
+                    root.go(d > 0 ? 2 : 0);
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+
+                r2 := Radio {
+                    text: "Custom";
+                    checked: root.choice == 2;
+                    activated => {
+                        root.go(2);
+                    }
+                    arrow(d) => {
+                        root.go(d > 0 ? 0 : 1);
+                    }
+                }
+
+                Text {
+                    text: root.recording ? "Press a key combination" : root.custom-text;
+                    color: Palette.foreground;
+                    vertical-alignment: center;
+                    font-weight: 600;
+                }
+
+                Button {
+                    text: root.recording ? "Recording..." : "Record";
+                    enabled: !root.recording;
+                    clicked => {
+                        root.record();
+                    }
+                }
+            }
+        }
+    }
+
+    if root.failed: Text {
+        text: root.failed-text;
+        color: root.red;
+        wrap: word-wrap;
+    }
+    if root.error-text != "": Text {
+        text: root.error-text;
+        color: root.red;
+        wrap: word-wrap;
+    }
+    if root.warning-text != "": Text {
+        text: root.warning-text;
+        color: Palette.foreground;
+        wrap: word-wrap;
+    }
+}
+
+// A list of exe names with a Remove button per row and a field to add one.
+component ExeList inherits VerticalLayout {
+    in property <[string]> names;
+    in property <string> empty-text;
+    in-out property <string> input;
+    in property <string> error-text;
+    callback add(string);
+    callback remove(int);
+
+    spacing: 4px;
+
+    if root.names.length == 0: Text {
+        text: root.empty-text;
+        color: Palette.foreground;
+        opacity: 0.7;
+    }
+    for name[i] in root.names: HorizontalLayout {
+        spacing: 8px;
+
+        Text {
+            text: name;
+            color: Palette.foreground;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+
+        Button {
+            text: "Remove";
+            clicked => {
+                root.remove(i);
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: 8px;
+
+        field := LineEdit {
+            placeholder-text: "Add exe name, for example game.exe";
+            text <=> root.input;
+            horizontal-stretch: 1;
+            accepted(t) => {
+                root.add(t);
+            }
+        }
+
+        Button {
+            text: "Add";
+            clicked => {
+                root.add(field.text);
+            }
+        }
+    }
+    if root.error-text != "": Text {
+        text: root.error-text;
+        color: Palette.color-scheme == ColorScheme.dark ? #ff99a4 : #c42b1c;
+    }
+}
+
+export component SettingsWindow inherits Window {
+    in property <bool> dark;
+
+    // Hotkey.
+    in-out property <int> hotkey-choice;
+    in property <string> custom-text;
+    in property <bool> recording;
+    in property <string> hotkey-error;
+    in property <string> hotkey-warning;
+    in property <bool> hotkey-failed;
+    in property <string> hotkey-failed-text;
+    callback hotkey-chosen(int);
+    callback record();
+
+    // Games.
+    in property <[string]> blocklist;
+    in-out property <string> block-input;
+    in property <string> block-error;
+    in property <[string]> running;
+    in property <bool> running-open;
+    in-out property <bool> disable-in-fullscreen;
+    callback block-add(string);
+    callback block-remove(int);
+    callback show-running();
+    callback add-running(string);
+    callback fullscreen-toggled(bool);
+
+    // Picker.
+    in-out property <bool> recents-disabled;
+    in-out property <int> skin-tone;
+    in-out property <int> size;
+    callback recents-toggled(bool);
+    callback tone-chosen(int);
+    callback size-chosen(int);
+
+    // Inserting.
+    in-out property <int> insert-mode;
+    in property <[string]> paste-exes;
+    in-out property <string> paste-input;
+    in property <string> paste-error;
+    callback insert-mode-chosen(int);
+    callback paste-add(string);
+    callback paste-remove(int);
+
+    // System.
+    in-out property <bool> start-with-windows;
+    in property <string> update-status;
+    callback autostart-toggled(bool);
+    callback check-updates();
+    callback about();
+    callback close-window();
+
+    title: "Emoji picker settings";
+    preferred-width: 520px;
+    preferred-height: 640px;
+    min-width: 420px;
+    min-height: 360px;
+    background: Palette.background;
+
+    init => {
+        Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed dark => {
+        Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    // Keyboard focus on the selected hotkey option (called once the values are set).
+    public function focus-hotkey() {
+        chooser.focus-choice();
+    }
+
+    FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                root.close-window();
+                return accept;
+            }
+            reject
+        }
+
+        ScrollView {
+            VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+                alignment: start;
+
+                GroupBox {
+                    title: "Hotkey";
+                    chooser := HotkeyChooser {
+                        choice <=> root.hotkey-choice;
+                        custom-text: root.custom-text;
+                        recording: root.recording;
+                        error-text: root.hotkey-error;
+                        warning-text: root.hotkey-warning;
+                        failed: root.hotkey-failed;
+                        failed-text: root.hotkey-failed-text;
+                        chosen(i) => {
+                            root.hotkey-chosen(i);
+                        }
+                        record => {
+                            root.record();
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "Games";
+                    VerticalLayout {
+                        spacing: 8px;
+
+                        Text {
+                            text: "The hotkey is off while one of these apps is in front.";
+                            color: Palette.foreground;
+                            wrap: word-wrap;
+                        }
+
+                        ExeList {
+                            names: root.blocklist;
+                            empty-text: "No apps blocked.";
+                            input <=> root.block-input;
+                            error-text: root.block-error;
+                            add(t) => {
+                                root.block-add(t);
+                            }
+                            remove(i) => {
+                                root.block-remove(i);
+                            }
+                        }
+
+                        HorizontalLayout {
+                            alignment: start;
+                            Button {
+                                text: root.running-open ? "Hide running apps" : "Add current game";
+                                clicked => {
+                                    root.show-running();
+                                }
+                            }
+                        }
+
+                        if root.running-open: VerticalLayout {
+                            spacing: 4px;
+
+                            if root.running.length == 0: Text {
+                                text: "No other apps with windows are running.";
+                                color: Palette.foreground;
+                            }
+                            for exe in root.running: HorizontalLayout {
+                                spacing: 8px;
+
+                                Text {
+                                    text: exe;
+                                    color: Palette.foreground;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                }
+
+                                Button {
+                                    text: "Add";
+                                    clicked => {
+                                        root.add-running(exe);
+                                    }
+                                }
+                            }
+                        }
+
+                        CheckBox {
+                            text: "Disable in fullscreen apps";
+                            checked <=> root.disable-in-fullscreen;
+                            toggled => {
+                                root.fullscreen-toggled(self.checked);
+                            }
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "Picker";
+                    VerticalLayout {
+                        spacing: 8px;
+
+                        CheckBox {
+                            text: "Disable recently used emojis";
+                            checked <=> root.recents-disabled;
+                            toggled => {
+                                root.recents-toggled(self.checked);
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+
+                            Text {
+                                text: "Skin tone";
+                                color: Palette.foreground;
+                                vertical-alignment: center;
+                                min-width: 80px;
+                            }
+
+                            ComboBox {
+                                model: ["Default", "Light", "Medium-light", "Medium", "Medium-dark", "Dark"];
+                                current-index <=> root.skin-tone;
+                                horizontal-stretch: 1;
+                                selected => {
+                                    root.tone-chosen(self.current-index);
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+
+                            Text {
+                                text: "Size";
+                                color: Palette.foreground;
+                                vertical-alignment: center;
+                                min-width: 80px;
+                            }
+
+                            ComboBox {
+                                model: ["Small", "Medium", "Large", "Huge"];
+                                current-index <=> root.size;
+                                horizontal-stretch: 1;
+                                selected => {
+                                    root.size-chosen(self.current-index);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "Inserting";
+                    VerticalLayout {
+                        spacing: 8px;
+
+                        t0 := Radio {
+                            text: "Type";
+                            checked: root.insert-mode == 0;
+                            activated => {
+                                root.insert-mode-chosen(0);
+                            }
+                            arrow => {
+                                t1.focus();
+                                root.insert-mode-chosen(1);
+                            }
+                        }
+
+                        t1 := Radio {
+                            text: "Paste (uses the clipboard and restores it)";
+                            checked: root.insert-mode == 1;
+                            activated => {
+                                root.insert-mode-chosen(1);
+                            }
+                            arrow => {
+                                t0.focus();
+                                root.insert-mode-chosen(0);
+                            }
+                        }
+
+                        Text {
+                            text: "Always paste into these apps:";
+                            color: Palette.foreground;
+                        }
+
+                        ExeList {
+                            names: root.paste-exes;
+                            empty-text: "No apps listed.";
+                            input <=> root.paste-input;
+                            error-text: root.paste-error;
+                            add(t) => {
+                                root.paste-add(t);
+                            }
+                            remove(i) => {
+                                root.paste-remove(i);
+                            }
+                        }
+                    }
+                }
+
+                GroupBox {
+                    title: "System";
+                    VerticalLayout {
+                        spacing: 8px;
+
+                        CheckBox {
+                            text: "Start with Windows";
+                            checked <=> root.start-with-windows;
+                            toggled => {
+                                root.autostart-toggled(self.checked);
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: start;
+
+                            Button {
+                                text: "Check for updates now";
+                                clicked => {
+                                    root.check-updates();
+                                }
+                            }
+
+                            Button {
+                                text: "About";
+                                clicked => {
+                                    root.about();
+                                }
+                            }
+                        }
+
+                        if root.update-status != "": Text {
+                            text: root.update-status;
+                            color: Palette.foreground;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component AboutWindow inherits Window {
+    in property <bool> dark;
+    in property <string> heading;
+    in property <[string]> lines;
+    in property <[string]> diagnostics;
+    callback close-window();
+
+    title: "About Emoji picker";
+    preferred-width: 460px;
+    background: Palette.background;
+
+    init => {
+        Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;
+        ok.focus();
+    }
+    changed dark => {
+        Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Escape || e.text == Key.Return) {
+                root.close-window();
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 6px;
+
+            Text {
+                text: root.heading;
+                color: Palette.foreground;
+                font-size: 18px;
+                font-weight: 600;
+            }
+
+            for line in root.lines: Text {
+                text: line;
+                color: Palette.foreground;
+                wrap: word-wrap;
+            }
+
+            Rectangle {
+                height: 8px;
+            }
+
+            for line in root.diagnostics: Text {
+                text: line;
+                color: Palette.foreground;
+                opacity: 0.75;
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                padding-top: 8px;
+
+                ok := Button {
+                    text: "Close";
+                    primary: true;
+                    clicked => {
+                        root.close-window();
+                    }
+                }
+            }
+        }
+    }
+}

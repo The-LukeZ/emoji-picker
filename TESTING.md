@@ -123,3 +123,36 @@ Known issues:
 
 - Paste mode: images on the clipboard may be restored slightly wrong (pixels shifted).
   Might get fixed in the future.
+
+## Settings, first-run dialog and About (Task 15)
+
+Setup: a debug build (logs go to stderr). Debug and `diag` builds read `EMOJI_PICKER_RUN_KEY`
+(a key path under HKCU, for example `Software\emoji-picker-test\Run`) and write the Start with
+Windows value there instead of the real Run key; without it they write the real
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value `emoji-picker`. The first run also
+writes it (Start with Windows is on by default). `EMOJI_PICKER_UI_TEST` scripts settings
+changes for the automated driver (see `app/src/settings.rs`).
+
+- [ ] Delete the config and start: the first-run dialog appears. Choose each option once
+      (restart with a deleted config each time): Win+. (preselected), Ctrl+Shift+Space, and
+      Custom (records the next key combination; Shift+A shows an inline error, Ctrl+Alt+E
+      shows the AltGr warning). Closing the dialog with X applies Win+.
+- [ ] Changing the hotkey in settings takes effect without a restart (old hotkey stops, new
+      one opens the picker).
+- [ ] "Add current game" lists the running apps with windows; clicking Add moves one to the
+      blocklist.
+- [ ] Start with Windows toggles the Run value
+      (`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).
+- [ ] About shows the credits, the version and the numbers (last picker open in ms, private MB).
+- [ ] Dark mode follows Windows in all three windows, with no white flash on open.
+- [ ] All three windows work with the keyboard only: Tab moves through the controls, Up and
+      Down move between the hotkey options, Space selects, Enter confirms the first-run
+      dialog, Esc closes settings and About.
+- [ ] Another app holding the chosen hotkey: the balloon shows and the settings hotkey field
+      turns red; a hand-edited invalid hotkey (`hotkey = "A"`) is red too.
+- [ ] Disable recently used emojis: the recents row disappears and `recents.txt` is deleted;
+      turning it back on starts with an empty row.
+- [ ] Settings, setup and About windows show the app icon in the title bar and taskbar.
+
+Note: while recording a custom hotkey, the current hotkey still works (pressing it opens the
+picker instead of being recorded).
