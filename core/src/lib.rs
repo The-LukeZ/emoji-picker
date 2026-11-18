@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod geometry;
+pub mod hook_matcher;
 pub mod hotkey;
 pub mod picker_state;
 pub mod policy;
