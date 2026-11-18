@@ -1,0 +1,13 @@
+[package]
+name = "emoji-core"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "emoji_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_bytes.workspace = true
+postcard.workspace = true

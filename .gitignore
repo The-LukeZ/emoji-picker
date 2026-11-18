@@ -2,3 +2,4 @@
 .idea/
 *.iml
 .superpowers/
+/assets/generated
