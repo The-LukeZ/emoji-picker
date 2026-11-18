@@ -208,6 +208,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::{read_to_string, write};
 
     #[test]
     fn write_atomic_replaces_and_leaves_no_tmp() {
@@ -230,7 +231,6 @@ mod tests {
         assert!(!sibling(&path, ".tmp").exists());
         assert!(path.join("keep").exists());
     }
-    use std::fs::{read_to_string, write};
 
     #[test]
     fn missing_file_gives_defaults() {
