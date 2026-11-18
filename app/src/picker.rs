@@ -258,6 +258,8 @@ struct Inner {
     opened_at: Cell<Option<Instant>>,
     last_open_ms: Cell<Option<u32>>,
     pending_insert: RefCell<Option<InsertRequest>>,
+    /// A hotkey press that arrived while closing; replayed at the end of `finish_close`.
+    pending_open: RefCell<Option<OpenRequest>>,
     target: Cell<isize>,
     anchor: Cell<(Option<Rect>, Point)>,
     scale: Cell<f32>,
@@ -355,6 +357,7 @@ impl Picker {
             opened_at: Cell::new(None),
             last_open_ms: Cell::new(None),
             pending_insert: RefCell::new(None),
+            pending_open: RefCell::new(None),
             target: Cell::new(0),
             anchor: Cell::new((None, Point { x: 0, y: 0 })),
             scale: Cell::new(1.0),
@@ -565,7 +568,12 @@ impl Inner {
                 self.close(None);
                 return;
             }
-            Phase::Closing => return,
+            Phase::Closing => {
+                // The close frame can take up to CLOSE_TIMEOUT: open again once hidden.
+                log!("picker: open while closing, replaying after close");
+                *self.pending_open.borrow_mut() = Some(ev);
+                return;
+            }
         }
         self.target.set(ev.target);
         self.anchor.set((ev.caret, ev.cursor));
@@ -696,6 +704,10 @@ impl Inner {
             let picked = req.base_hexcodes.clone();
             (self.on_insert)(req);
             self.record_picks(&picked);
+        }
+        let reopen = self.pending_open.borrow_mut().take();
+        if let Some(ev) = reopen {
+            self.open(ev);
         }
     }
 

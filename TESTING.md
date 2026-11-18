@@ -46,6 +46,9 @@ by itself (no synthetic keys), logs the same numbers and a summary, then quits.
 - [ ] Clicking the hand swatch cycles the tones and thumbs up changes with it.
 - [ ] No taskbar button and no Alt+Tab entry while the picker is open.
 - [ ] Clicking outside the picker closes it.
+- [ ] A hotkey press while the picker is closing is not lost: pick an emoji with Enter and
+      press the hotkey right away (within about 250 ms). The emoji is inserted, then the picker
+      opens again; the log shows `picker: open while closing, replaying after close`.
 - [x] Open and close 10 times, then read private bytes from the debug log: hidden < 30 MB,
       open < 60 MB; median open < 200 ms. Numbers recorded in
       `.superpowers/sdd/2026-11-18-emoji-picker/spike-results.md`. (Verified 2026-11-18 with
