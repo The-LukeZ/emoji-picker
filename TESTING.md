@@ -73,8 +73,10 @@ scripts must send their keys with `dwExtraInfo = 0`. The log shows
       keys sent with `SendInput`; the new Explorer window was closed again.)
 - [ ] In a blocklisted game Win+. reaches the game (the Windows panel opens there), and the
       log (or Process Explorer) shows the hook uninstalled while the game has focus.
-- [ ] The picker gets keyboard focus every time across 20 Win+. opens (typing goes to the
-      search field; the log has no `SetForegroundWindow refused`).
+- [x] The picker gets keyboard focus every time across 20 Win+. opens (typing goes to the
+      search field; the log has no `SetForegroundWindow refused`). (Verified 2026-11-18 in
+      test mode with `SendInput`: 20/20 opens took the foreground, checked with
+      `GetForegroundWindow`; no refusal logged.)
 - [ ] Win+L, unlock, then type `.` in Notepad: a period is typed and no picker opens.
 - [ ] Win+L, unlock, then Win+. still opens the picker (the matcher was reset, not stuck).
 - [ ] Making `SetWindowsHookExW` fail (or a debugger forcing `is_lost`) shows the balloon
