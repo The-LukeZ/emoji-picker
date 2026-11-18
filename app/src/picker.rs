@@ -10,6 +10,7 @@
 //! clear the [`AtlasCache`]. Without that frame the decoded pages stay alive while hidden.
 
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
@@ -43,6 +44,8 @@ const TAB_ICONS: [&str; 8] = [
 ];
 /// Hand shown as the skin tone swatch.
 const TONE_HAND: &str = "270B";
+/// Pixel wheel travel that counts as one wheel notch (`WHEEL_DELTA`).
+const PIXELS_PER_NOTCH: f64 = 120.0;
 /// Safety net when the closing frame never renders.
 const CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
 
@@ -79,6 +82,26 @@ pub struct InsertRequest {
 /// Splits the visible emoji list into grid rows of `cols` entries; the last row may be short.
 fn build_rows(indices: &[u32], cols: usize) -> Vec<Vec<u32>> {
     indices.chunks(cols.max(1)).map(<[u32]>::to_vec).collect()
+}
+
+/// Adds `notches` of Ctrl+wheel travel to `acc`. Returns one zoom step (+1 bigger, -1 smaller)
+/// when a whole notch is crossed, so touchpads with many small deltas step like a mouse. At most
+/// one step per event; the travel starts again from zero after a step and on a direction change.
+fn wheel_step(acc: &Cell<f64>, notches: f64) -> Option<i32> {
+    let mut total = acc.get();
+    if total * notches < 0.0 {
+        total = 0.0;
+    }
+    total += notches;
+    let step = if total >= 1.0 {
+        Some(1)
+    } else if total <= -1.0 {
+        Some(-1)
+    } else {
+        None
+    };
+    acc.set(if step.is_some() { 0.0 } else { total });
+    step
 }
 
 /// A tile for emoji `emoji` in `tone`, clipped from its page at `atlas_size`.
@@ -208,6 +231,12 @@ struct Inner {
     hwnd: Cell<isize>,
     hovered: Cell<i32>,
     ctrl: Cell<bool>,
+    /// Ctrl+wheel travel not yet turned into a zoom step, in wheel notches.
+    wheel: Cell<f64>,
+    /// The picker had keyboard focus at some point during this open; only then does losing
+    /// it (a click elsewhere) close the picker.
+    had_focus: Cell<bool>,
+    config_path: PathBuf,
     close_timer: Timer,
     on_insert: Box<dyn Fn(InsertRequest)>,
 }
@@ -221,6 +250,22 @@ impl Picker {
         cfg: Arc<Config>,
         recents: Recents,
         on_insert: impl Fn(InsertRequest) + 'static,
+    ) -> Picker {
+        Picker::with_config_path(
+            cfg,
+            recents,
+            on_insert,
+            crate::config_dir().join("config.toml"),
+        )
+    }
+
+    /// Like [`Picker::new`], saving size and tone changes to `config_path`. Tests pass a temp
+    /// path here, so no test can ever write the user's real config.
+    fn with_config_path(
+        cfg: Arc<Config>,
+        recents: Recents,
+        on_insert: impl Fn(InsertRequest) + 'static,
+        config_path: PathBuf,
     ) -> Picker {
         let table = &bundle().table;
         NEXT_OWNER.store(sys::create_owner_window(), Ordering::SeqCst);
@@ -281,6 +326,9 @@ impl Picker {
             hwnd: Cell::new(0),
             hovered: Cell::new(-1),
             ctrl: Cell::new(false),
+            wheel: Cell::new(0.0),
+            had_focus: Cell::new(false),
+            config_path,
             close_timer: Timer::default(),
             on_insert: Box::new(on_insert),
         });
@@ -388,19 +436,33 @@ impl Inner {
                 Phase::Closing => later(Inner::finish_close),
                 _ => {}
             },
-            WindowEvent::Focused(false) => {
+            WindowEvent::Focused(true) => {
                 if matches!(self.phase.get(), Phase::Opening | Phase::Open) {
-                    later(Inner::deactivated);
+                    self.had_focus.set(true);
                 }
             }
-            WindowEvent::ModifiersChanged(m) => self.ctrl.set(m.state().control_key()),
+            WindowEvent::Focused(false) => {
+                if matches!(self.phase.get(), Phase::Opening | Phase::Open) {
+                    if self.had_focus.get() {
+                        later(Inner::deactivated);
+                    } else {
+                        log!("picker: focus lost before it was ever gained: staying open");
+                    }
+                }
+            }
+            WindowEvent::ModifiersChanged(m) => {
+                let ctrl = m.state().control_key();
+                if !ctrl {
+                    self.wheel.set(0.0);
+                }
+                self.ctrl.set(ctrl);
+            }
             WindowEvent::MouseWheel { delta, .. } if self.ctrl.get() => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64,
-                    MouseScrollDelta::PixelDelta(p) => p.y,
+                let notches = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
+                    MouseScrollDelta::PixelDelta(p) => p.y / PIXELS_PER_NOTCH,
                 };
-                if dy != 0.0 {
-                    let dir = if dy > 0.0 { 1 } else { -1 };
+                if let Some(dir) = wheel_step(&self.wheel, notches) {
                     let weak = weak.clone();
                     Timer::single_shot(Duration::ZERO, move || {
                         if let Some(inner) = weak.upgrade() {
@@ -452,6 +514,8 @@ impl Inner {
         *self.state.borrow_mut() = PickerState::default();
         self.queued.borrow_mut().clear();
         self.hovered.set(-1);
+        self.wheel.set(0.0);
+        self.had_focus.set(false);
         self.apply_size();
         self.refresh_all();
         self.place();
@@ -470,7 +534,7 @@ impl Inner {
         if hwnd != 0 {
             sys::set_tool_window(hwnd);
             if !sys::activate(hwnd) {
-                log!("picker: SetForegroundWindow refused");
+                log!("picker: SetForegroundWindow refused: open without focus, closes on Esc after a click into it, a pick or the hotkey");
             }
         }
         self.ui.invoke_focus_search();
@@ -815,8 +879,8 @@ impl Inner {
     fn update_config(&self, change: impl FnOnce(&mut Config)) {
         let mut cfg = (*self.cfg()).clone();
         change(&mut cfg);
-        let path = crate::config_dir().join("config.toml");
-        if let Err(e) = cfg.save(&path) {
+        let path = &self.config_path;
+        if let Err(e) = cfg.save(path) {
             log!("picker: saving {} failed: {e}", path.display());
         }
         *self.cfg.borrow_mut() = Arc::new(cfg);
@@ -1003,8 +1067,7 @@ mod tests {
         }
 
         let config_dir = tempfile::tempdir().unwrap();
-        // SAFETY: single-threaded at this point of the test; only this test reads the variable.
-        unsafe { std::env::set_var("EMOJI_PICKER_CONFIG_DIR", config_dir.path()) };
+        let config_path = config_dir.path().join("config.toml");
         let out = std::env::var_os("SNAPSHOT_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
@@ -1016,7 +1079,12 @@ mod tests {
                 .map(String::from)
                 .to_vec(),
         };
-        let picker = Picker::new(Arc::new(Config::default()), recents, |_| {});
+        let picker = Picker::with_config_path(
+            Arc::new(Config::default()),
+            recents,
+            |_| {},
+            config_path.clone(),
+        );
         let inner = picker.inner.clone();
         let render = |name: &str| {
             let w = inner.ui.get_win_w().ceil() as u32;
@@ -1077,7 +1145,7 @@ mod tests {
         render("picker-huge.png");
         assert_eq!(inner.cfg().size, emoji_core::config::SizeStep::Huge);
         assert_eq!(inner.cfg().skin_tone, 3);
-        let saved = Config::load(&config_dir.path().join("config.toml")).0;
+        let saved = Config::load(&config_path).0;
         assert_eq!(
             (saved.size, saved.skin_tone),
             (emoji_core::config::SizeStep::Huge, 3)
@@ -1093,6 +1161,23 @@ mod tests {
         for hex in TAB_ICONS.iter().chain([&TONE_HAND]) {
             assert!(table.by_hexcode(hex).is_some(), "{hex}");
         }
+    }
+
+    #[test]
+    fn wheel_steps_once_per_notch() {
+        let acc = Cell::new(0.0);
+        // Mouse: one notch is one step.
+        assert_eq!(wheel_step(&acc, 1.0), Some(1));
+        assert_eq!(wheel_step(&acc, -1.0), Some(-1));
+        // Touchpad: many small deltas give one step per whole notch.
+        let steps: Vec<i32> = (0..25).filter_map(|_| wheel_step(&acc, 0.1)).collect();
+        assert_eq!(steps, vec![1, 1]);
+        // Reversing drops the travel collected the other way.
+        assert_eq!(wheel_step(&acc, -0.6), None);
+        assert_eq!(wheel_step(&acc, -0.6), Some(-1));
+        // A fast flick of 3 notches gives one step and leaves nothing pending.
+        assert_eq!(wheel_step(&acc, 3.0), Some(1));
+        assert_eq!(wheel_step(&acc, 0.5), None);
     }
 
     #[test]
