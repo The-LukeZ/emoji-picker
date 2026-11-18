@@ -1,0 +1,39 @@
+# Release automation: https://knope.tech
+# Contributors describe user-facing changes with `knope document-change` (a file in .changeset/).
+# .github/workflows/prepare-release.yml runs `prepare-release` on every push to main and opens
+# the "Release vX.Y.Z" PR; merging it runs .github/workflows/release.yml (pack, `release`,
+# upload).
+
+[package]
+versioned_files = ["app/Cargo.toml", "Cargo.lock"]
+changelog = "CHANGELOG.md"
+
+# Versions and the changelog come from change files only, not from commit messages.
+[changes]
+ignore_conventional_commits = true
+
+[[workflows]]
+name = "document-change"
+
+[[workflows.steps]]
+type = "CreateChangeFile"
+
+[[workflows]]
+name = "prepare-release"
+
+[[workflows.steps]]
+type = "PrepareRelease"
+
+[[workflows.steps]]
+type = "Command"
+command = "git commit -m \"chore: prepare release $version\""
+
+[[workflows]]
+name = "release"
+
+[[workflows.steps]]
+type = "Release"
+
+[github]
+owner = "The-LukeZ"
+repo = "emoji-picker"

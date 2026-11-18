@@ -1,0 +1,87 @@
+name: release
+
+# Runs when the "Release vX.Y.Z" pull request (branch `release`) is merged: builds the app,
+# packs it with Velopack, creates the tag and GitHub release (knope) and uploads the
+# installer and update packages to it.
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+env:
+  # Must match the exact `velopack` crate version in app/Cargo.toml.
+  VPK_VERSION: 1.2.161
+  REPO_URL: https://github.com/The-LukeZ/emoji-picker
+
+jobs:
+  release:
+    if: github.event.pull_request.merged == true && github.head_ref == 'release'
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: |
+            target/xtask-cache
+            assets/generated
+          key: assets-${{ hashFiles('xtask/**', 'core/src/table.rs') }}
+      - name: Read the version
+        id: version
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' app/Cargo.toml | head -n 1)"
+          echo "Releasing v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build assets
+        run: cargo xtask assets
+      - name: Build app
+        run: cargo build --release -p emoji-picker
+      - name: Stage the files to pack
+        # target/release also holds build intermediates; the app is the single exe.
+        run: |
+          mkdir -p target/vpk-pack
+          cp target/release/emoji-picker.exe target/vpk-pack/
+      - name: Install vpk
+        run: dotnet tool install -g vpk --version "$VPK_VERSION"
+      - name: Download the previous release (for delta packages)
+        # Fails on the first release, when there is nothing to download.
+        continue-on-error: true
+        run: vpk download github --repoUrl "$REPO_URL" --token "$GITHUB_TOKEN"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pack
+        # Signing is not set up yet; vpk pack signing flags can be added here later.
+        run: >
+          vpk pack
+          --packId emoji-picker
+          --packVersion "${{ steps.version.outputs.version }}"
+          --packDir target/vpk-pack
+          --mainExe emoji-picker.exe
+          --icon assets/generated/app.ico
+      - uses: knope-dev/action@v2.1.2
+        with:
+          version: 0.24.0
+      - name: Create the tag and GitHub release
+        run: knope release --verbose
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload the installer and packages
+        run: >
+          vpk upload github
+          --repoUrl "$REPO_URL"
+          --token "$GITHUB_TOKEN"
+          --tag "v${{ steps.version.outputs.version }}"
+          --merge
+          --publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,64 @@
+name: prepare-release
+
+# Keeps a "Release vX.Y.Z" pull request from the `release` branch up to date while
+# .changeset/ has change files. Merging it runs release.yml.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: true
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Look for change files
+        id: changes
+        run: |
+          if compgen -G ".changeset/*.md" > /dev/null; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No change files in .changeset/: nothing to release."
+          fi
+      - name: Configure Git
+        if: steps.changes.outputs.found == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - uses: knope-dev/action@v2.1.2
+        if: steps.changes.outputs.found == 'true'
+        with:
+          version: 0.24.0
+      - name: Prepare the release commit on branch release
+        if: steps.changes.outputs.found == 'true'
+        run: |
+          git switch -C release
+          knope prepare-release --verbose
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push and open or update the pull request
+        if: steps.changes.outputs.found == 'true'
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' app/Cargo.toml | head -n 1)"
+          git push --force origin release
+          # The newest changelog section: from its "## " heading up to the next one.
+          notes="$(awk '/^## /{n++} n==1' CHANGELOG.md)"
+          body="$(printf 'Merging this pull request publishes v%s (release.yml).\n\n%s\n' "$version" "$notes")"
+          number="$(gh pr list --head release --base main --state open --json number --jq '.[0].number')"
+          if [ -n "$number" ]; then
+            gh pr edit "$number" --title "Release v$version" --body "$body"
+          else
+            gh pr create --head release --base main --title "Release v$version" --body "$body"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

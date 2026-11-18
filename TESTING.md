@@ -169,3 +169,55 @@ changes for the automated driver (see `app/src/settings.rs`).
 Note: recording Win+. under Custom may not work while the Win+. hook is suspended, because
 Windows can take Win+. for its own emoji panel. Win+. has its own option, so this only
 matters for Custom.
+
+## Installer and updates (Task 16)
+
+These checks install the app for the current user and change the real HKCU Run value. Run
+them in a Git Bash in the repo root. They need the .NET SDK and the `vpk` CLI at the same
+version as the `velopack` crate in `app/Cargo.toml` (1.2.161):
+
+```sh
+dotnet tool install vpk --version 1.2.161 --tool-path .superpowers/sdd/2026-11-18-emoji-picker/tools
+VPK=.superpowers/sdd/2026-11-18-emoji-picker/tools/vpk
+OUT=.superpowers/sdd/2026-11-18-emoji-picker/pack-test
+```
+
+Pack 0.0.1 and 0.0.2 with a `diag` build, so the update source can be a local folder
+(`EMOJI_PICKER_UPDATE_DIR` is read only by debug and `diag` builds) and the log is on stderr.
+Same flags as `release.yml`:
+
+```sh
+cargo build --release -p emoji-picker --features diag
+mkdir -p target/vpk-pack && cp target/release/emoji-picker.exe target/vpk-pack/
+$VPK pack --packId emoji-picker --packVersion 0.0.1 --packDir target/vpk-pack \
+  --mainExe emoji-picker.exe --icon assets/generated/app.ico --outputDir "$OUT"
+ls -l "$OUT"   # emoji-picker-win-Setup.exe: below 30 MB, target 15 MB
+```
+
+- [ ] Run `$OUT/emoji-picker-win-Setup.exe`: it installs to
+      `%LOCALAPPDATA%\emoji-picker` with no UAC (administrator) prompt and starts the app.
+      Delete `%APPDATA%\emoji-picker\config.toml` first if it exists, so the first-run
+      dialog appears.
+- [ ] The first-run dialog appears after install; after choosing a hotkey the picker opens.
+- [ ] Settings > "Check for updates now" on 0.0.1 with no newer package shows "You have the
+      latest version (v0.0.1)." under the button. In a dev run (`cargo run -p emoji-picker`)
+      it shows "Updates are available only in the installed app." and makes no network call.
+- [ ] Update 0.0.1 to 0.0.2 from the local folder: quit the app (tray > Quit), then
+
+      ```sh
+      $VPK pack --packId emoji-picker --packVersion 0.0.2 --packDir target/vpk-pack \
+        --mainExe emoji-picker.exe --icon assets/generated/app.ico --outputDir "$OUT"
+      EMOJI_PICKER_UPDATE_DIR="$(cygpath -w "$OUT")" "$LOCALAPPDATA/emoji-picker/current/emoji-picker.exe"
+      ```
+
+      About 10 seconds after start the log shows `updater: downloading 0.0.2` and
+      `updater: 0.0.2 downloaded`, a balloon says "Emoji picker 0.0.2 is ready", and the tray
+      menu has "Restart to update (v0.0.2)" at the top. Choosing it closes the app (tray icon
+      gone) and starts 0.0.2; About shows 0.0.2.
+- [ ] Update on next start: repeat with 0.0.3 but quit from the tray instead of restarting.
+      The next start applies 0.0.3 before the app opens (About shows 0.0.3).
+- [ ] With Start with Windows on, the Run value exists
+      (`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v emoji-picker`).
+      Uninstall from Windows Settings > Apps: the app quits, `%LOCALAPPDATA%\emoji-picker`
+      is gone and the same `reg query` reports that the value does not exist.
+- [ ] Afterwards: remove `$OUT` and `target/vpk-pack`.

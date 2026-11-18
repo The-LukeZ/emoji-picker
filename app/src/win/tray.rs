@@ -22,6 +22,7 @@ pub const CMD_SETTINGS: usize = 2;
 pub const CMD_PAUSE: usize = 3;
 pub const CMD_ABOUT: usize = 4;
 pub const CMD_QUIT: usize = 5;
+pub const CMD_RESTART_UPDATE: usize = 6;
 
 const ICON_ID: u32 = 1;
 const TIP: &str = "Emoji picker";
@@ -86,7 +87,8 @@ impl Tray {
     }
 
     /// Shows the context menu at the cursor. The choice arrives as `WM_COMMAND` on the owner.
-    pub fn show_menu(&self, paused: bool) {
+    /// `update` is a downloaded version (`"1.2.3"`): it adds "Restart to update (v1.2.3)".
+    pub fn show_menu(&self, paused: bool, update: Option<&str>) {
         // SAFETY: the menu is created, used and destroyed within this call.
         let Ok(menu) = (unsafe { CreatePopupMenu() }) else {
             return;
@@ -96,16 +98,28 @@ impl Tray {
         } else {
             MF_STRING
         };
-        let items: [(_, usize, PCWSTR); 6] = [
+        let update_text: Option<Vec<u16>> = update.map(|v| {
+            format!("Restart to update (v{v})")
+                .encode_utf16()
+                .chain(Some(0))
+                .collect()
+        });
+        let mut items: Vec<(_, usize, PCWSTR)> = Vec::with_capacity(8);
+        if let Some(text) = &update_text {
+            items.push((MF_STRING, CMD_RESTART_UPDATE, PCWSTR(text.as_ptr())));
+            items.push((MF_SEPARATOR, 0, PCWSTR::null()));
+        }
+        items.extend([
             (MF_STRING, CMD_OPEN_PICKER, w!("Open picker")),
             (MF_STRING, CMD_SETTINGS, w!("Settings")),
             (pause_flags, CMD_PAUSE, w!("Pause hotkey")),
             (MF_STRING, CMD_ABOUT, w!("About")),
             (MF_SEPARATOR, 0, PCWSTR::null()),
             (MF_STRING, CMD_QUIT, w!("Quit")),
-        ];
+        ]);
         for (flags, id, text) in items {
-            // SAFETY: menu is valid and text is a static wide string or null for a separator.
+            // SAFETY: menu is valid and text is a static wide string, a null-terminated buffer
+            // (update_text) that outlives the call, or null for a separator.
             let _ = unsafe { AppendMenuW(menu, flags, id, text) };
         }
         // SAFETY: menu is a valid menu handle with this item.

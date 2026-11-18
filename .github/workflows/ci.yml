@@ -31,3 +31,22 @@ jobs:
         run: cargo test -p emoji-core --release -- --ignored
       - name: Build app
         run: cargo build --release -p emoji-picker
+
+  changeset:
+    # Reminds contributors to describe user-facing changes. Warns only, never fails.
+    if: github.event_name == 'pull_request' && github.head_ref != 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check for a change file
+        run: |
+          base="origin/${{ github.base_ref }}"
+          changed="$(git diff --name-only "$base"...HEAD -- app core)"
+          added="$(git diff --name-only --diff-filter=A "$base"...HEAD -- '.changeset/*.md')"
+          if [ -n "$changed" ] && [ -z "$added" ]; then
+            echo "::warning title=No change file::app/ or core/ changed but no .changeset/*.md was added. Run 'knope document-change' if this change is user-facing."
+          else
+            echo "OK"
+          fi

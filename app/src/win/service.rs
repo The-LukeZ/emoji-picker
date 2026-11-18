@@ -41,7 +41,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::foreground::{caret_rect, cursor, is_window_fullscreen, probe};
 use super::ll_hook::LlHook;
-use super::tray::{Tray, CMD_ABOUT, CMD_OPEN_PICKER, CMD_PAUSE, CMD_QUIT, CMD_SETTINGS, WM_TRAY};
+use super::tray::{
+    Tray, CMD_ABOUT, CMD_OPEN_PICKER, CMD_PAUSE, CMD_QUIT, CMD_RESTART_UPDATE, CMD_SETTINGS,
+    WM_TRAY,
+};
 
 /// Class of the message-only window; a second instance finds it with `FindWindowExW`.
 pub const SERVICE_CLASS: PCWSTR = w!("EmojiPickerService");
@@ -80,6 +83,8 @@ pub enum UiEvent {
     HotkeySwitched(Hotkey),
     OpenSettings,
     OpenAbout,
+    /// "Restart to update" in the tray menu.
+    RestartToUpdate,
     Quit,
     HotkeyFailed,
 }
@@ -97,6 +102,8 @@ pub enum ServiceCmd {
         title: String,
         text: String,
     },
+    /// An update (`"1.2.3"`) is downloaded: the tray menu offers "Restart to update".
+    UpdateReady(String),
     Shutdown,
 }
 
@@ -155,6 +162,8 @@ struct Service {
     /// What the configured hotkey needs.
     mode: Cell<Mode>,
     paused: Cell<bool>,
+    /// Downloaded update version, shown as "Restart to update" in the tray menu.
+    update_ready: RefCell<Option<String>>,
     /// A hotkey is being recorded (see [`ServiceCmd::SuspendHotkey`]).
     suspended: Cell<bool>,
     /// The hotkey is live: registered (combo) or hook installed (Win+.).
@@ -332,6 +341,7 @@ fn run(
         cfg: RefCell::new(cfg.clone()),
         mode: Cell::new(Mode::Off),
         paused: Cell::new(false),
+        update_ready: RefCell::new(None),
         suspended: Cell::new(false),
         armed: Cell::new(false),
         ll_hook,
@@ -417,6 +427,7 @@ impl Service {
                     self.refresh();
                 }
                 ServiceCmd::Balloon { title, text } => self.tray.balloon(&title, &text),
+                ServiceCmd::UpdateReady(version) => *self.update_ready.borrow_mut() = Some(version),
                 // SAFETY: ends this thread's message loop.
                 ServiceCmd::Shutdown => unsafe { PostQuitMessage(0) },
             }
@@ -675,6 +686,7 @@ impl Service {
             }
             CMD_ABOUT => self.emit(UiEvent::OpenAbout),
             CMD_QUIT => self.emit(UiEvent::Quit),
+            CMD_RESTART_UPDATE => self.emit(UiEvent::RestartToUpdate),
             _ => {}
         }
     }
@@ -758,7 +770,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_OPEN_SETTINGS => svc.emit(UiEvent::OpenSettings),
         WM_TRAY => match (lp.0 & 0xFFFF) as u32 {
             WM_CONTEXTMENU => {
-                svc.tray.show_menu(svc.paused.get());
+                let update = svc.update_ready.borrow().clone();
+                svc.tray.show_menu(svc.paused.get(), update.as_deref());
                 // Thread wake messages posted during the modal menu loop are dropped.
                 svc.drain();
             }

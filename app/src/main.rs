@@ -16,6 +16,7 @@ macro_rules! log {
 mod assets;
 mod picker;
 mod settings;
+mod updater;
 mod win;
 
 /// Generated Slint components (root `app/ui/app.slint`).
@@ -37,6 +38,7 @@ use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, PostMessageW, HWND_
 
 use picker::{InsertRequest, OpenRequest, Picker};
 use settings::{with_state, AppState};
+use updater::{spawn_updater, UpdateEvent};
 use win::service::{spawn_service, ServiceCmd, UiEvent, SERVICE_CLASS, WM_OPEN_SETTINGS};
 
 /// Called by the picker after it hid: types or pastes the pick into the target window, or
@@ -148,6 +150,22 @@ fn on_ui_event(event: UiEvent) {
             log!("ui: OpenAbout (private {private_kb} KB)");
             with_state(settings::show_about);
         }
+        UiEvent::RestartToUpdate => {
+            log!("ui: RestartToUpdate");
+            let started = with_state(|s| s.updater.apply_and_restart()).unwrap_or(false);
+            if started {
+                // The Velopack updater waits for this process to exit, so quit normally.
+                on_ui_event(UiEvent::Quit);
+            } else {
+                with_state(|s| {
+                    s.service.send(ServiceCmd::Balloon {
+                        title: "Emoji picker".into(),
+                        text: "The update could not be started. It installs on the next start."
+                            .into(),
+                    });
+                });
+            }
+        }
         UiEvent::HotkeyFailed => {
             log!("ui: HotkeyFailed");
             with_state(AppState::on_hotkey_failed);
@@ -161,7 +179,37 @@ fn on_ui_event(event: UiEvent) {
     }
 }
 
+/// Runs on the Slint event loop thread.
+fn on_update_event(event: UpdateEvent) {
+    match event {
+        UpdateEvent::Ready(version) => {
+            const HOW: &str =
+                "Choose Restart to update in the tray menu, or it installs on the next start.";
+            log!("ui: update {version} ready");
+            settings::set_update_status(&format!("Version {version} is downloaded. {HOW}"));
+            with_state(|s| {
+                s.service.send(ServiceCmd::UpdateReady(version.clone()));
+                s.service.send(ServiceCmd::Balloon {
+                    title: format!("Emoji picker {version} is ready"),
+                    text: HOW.into(),
+                });
+            });
+        }
+        UpdateEvent::Status(text) => settings::set_update_status(&text),
+    }
+}
+
 fn main() {
+    // Velopack install, update and uninstall hooks run (and exit) here, before anything else.
+    // Uninstall removes the Start with Windows value, which Velopack does not know about.
+    velopack::VelopackApp::build()
+        .on_before_uninstall_fast_callback(|_| {
+            if let Err(e) = win::sys::set_autostart(false) {
+                log!("uninstall: removing the Run value failed: {e}");
+            }
+        })
+        .run();
+
     if !claim_single_instance() {
         log!("another instance is running: asking it to open settings");
         signal_first_instance();
@@ -213,7 +261,13 @@ fn main() {
             text,
         });
     }
-    settings::install(AppState::new(handle, picker));
+    let updater = spawn_updater(|event| {
+        let text = format!("{event:?}");
+        if let Err(e) = slint::invoke_from_event_loop(move || on_update_event(event)) {
+            log!("ui: dropped {text}: {e}");
+        }
+    });
+    settings::install(AppState::new(handle, picker, updater));
     if first_run {
         with_state(settings::show_first_run);
     }

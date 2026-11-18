@@ -25,6 +25,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{MapVirtualKeyW, MAPVK_VSC_TO_V
 
 use crate::picker::Picker;
 use crate::ui::{AboutWindow, FirstRunWindow, SettingsWindow};
+use crate::updater::UpdaterHandle;
 use crate::win::service::{ServiceCmd, ServiceHandle};
 use crate::win::sys;
 
@@ -143,6 +144,11 @@ fn first_run_pick(choice: i32, custom: Option<Hotkey>) -> Option<Hotkey> {
 /// while Custom has no valid recording.
 fn first_run_close_pick(choice: i32, custom: Option<Hotkey>) -> Hotkey {
     first_run_pick(choice, custom).unwrap_or(Hotkey::WinPeriod)
+}
+
+/// Shows `text` under "Check for updates now" when the settings window is open.
+pub fn set_update_status(text: &str) {
+    with_settings(|_, s| s.ui.set_update_status(text.into()));
 }
 
 /// A config save failed. The log is empty in release builds, so a balloon tells the user.
@@ -331,6 +337,7 @@ struct FirstRunUi {
 pub struct AppState {
     pub service: ServiceHandle,
     pub picker: Picker,
+    pub updater: UpdaterHandle,
     /// The service reported that the current hotkey could not be registered.
     hotkey_failed: Cell<bool>,
     /// The service was asked to release the hotkey while a window records one.
@@ -360,10 +367,11 @@ pub fn with_state<R>(f: impl FnOnce(&AppState) -> R) -> Option<R> {
 }
 
 impl AppState {
-    pub fn new(service: ServiceHandle, picker: Picker) -> AppState {
+    pub fn new(service: ServiceHandle, picker: Picker, updater: UpdaterHandle) -> AppState {
         AppState {
             service,
             picker,
+            updater,
             hotkey_failed: Cell::new(false),
             hotkey_suspended: Cell::new(false),
             settings: RefCell::new(None),
@@ -719,9 +727,13 @@ fn wire_settings(ui: &SettingsWindow) {
         with_state(|state| state.update(|c| c.start_with_windows = on));
     });
     ui.on_check_updates(|| {
-        // Wired to Velopack in Task 16.
-        with_settings(|_, s| {
-            s.ui.set_update_status("Update checks are not available in this build yet.".into());
+        with_settings(|state, s| {
+            let text = if state.updater.check_now() {
+                "Checking for updates..."
+            } else {
+                "Updates are available only in the installed app."
+            };
+            s.ui.set_update_status(text.into());
         });
     });
     ui.on_about(|| {
