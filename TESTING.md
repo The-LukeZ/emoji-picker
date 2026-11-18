@@ -68,7 +68,15 @@ scripts must send their keys with `dwExtraInfo = 0`. The log shows
 
 - [ ] Win+. opens our picker and the Windows emoji panel does not open.
 - [ ] Releasing Win after Win+. does not open the Start menu.
-- [ ] Win alone still opens the Start menu.
+- [x] Win alone still opens the Start menu, also as the first Win press after closing the
+      picker with Esc. (Verified 2026-11-18, run by the owner in test mode with `SendInput`:
+      Start (SearchHost.exe on this build) took the foreground on the first bare Win press; the
+      log shows the Win key-up as `Pass` with no VK_E8 mask; Start was closed again with Esc.)
+- [x] While the picker is open the hook still sees keys: Win+. closes our picker and the
+      Windows emoji panel does not open. (Verified 2026-11-18, run by the owner in test mode
+      with `SendInput`: the second Win+. was traced as `Open` and closed the picker; no new
+      TextInputHost window and no TextInputHost foreground after 500 ms; the Esc key-down was
+      traced while the picker was open in 21 of 21 Esc-closed opens.)
 - [x] Win+E still opens Explorer. (Verified 2026-11-18 with the hook installed in test mode,
       keys sent with `SendInput`; the new Explorer window was closed again.)
 - [ ] In a blocklisted game Win+. reaches the game (the Windows panel opens there), and the
