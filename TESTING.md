@@ -19,6 +19,9 @@ blocklist = ["notepad.exe"]
 - [ ] A maximized normal window is not fullscreen: with the taskbar set to auto-hide, maximize
       Explorer (not blocklisted) and press the hotkey: the picker opens and the log shows
       `fullscreen=false`. Repeat on a second monitor that has no taskbar.
+      Open issue (2026-11-18, owner): with the taskbar visible, Win+. in a maximized Explorer
+      window opens the Windows emoji panel on every display; Notepad and other apps work.
+      Cause not diagnosed yet (no log captured).
 - [ ] Borderless fullscreen still blocks: F11 in a browser and a borderless game on the same
       monitors still log `fullscreen=true` and the hotkey reaches the app.
 - [ ] Starting a second `emoji-picker.exe` exits it at once, logs `OpenSettings` in the first, and only one tray icon exists.
@@ -46,12 +49,12 @@ by itself (no synthetic keys), logs the same numbers and a summary, then quits.
 - [ ] Clicking the hand swatch cycles the tones and thumbs up changes with it.
 - [ ] No taskbar button and no Alt+Tab entry while the picker is open.
 - [ ] Clicking outside the picker closes it.
-- [ ] A hotkey press while the picker is closing is not lost: pick an emoji with Enter and
+- [x] A hotkey press while the picker is closing is not lost: pick an emoji with Enter and
       press the hotkey right away (within about 250 ms). The emoji is inserted, then the picker
       opens again; the log shows `picker: open while closing, replaying after close`. Then
       pick a second emoji: it arrives in Notepad too (the replayed open targets Notepad, not
       the picker).
-- [ ] With the settings window in front, the hotkey opens the picker for the app that was in
+- [x] With the settings window in front, the hotkey opens the picker for the app that was in
       front before settings, and a pick arrives there.
 - [x] Open and close 10 times, then read private bytes from the debug log: hidden < 30 MB,
       open < 60 MB; median open < 200 ms. Numbers recorded in
