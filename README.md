@@ -60,7 +60,6 @@ cargo build --release -p emoji-picker                   # release build in targe
 
 The workspace has three crates: `core` (platform-free logic and its tests), `app` (the
 Windows app, with the Slint UI in `app/ui/`) and `xtask` (asset build tooling, not shipped).
-`TESTING.md` lists the manual desktop checks.
 
 ## Contributing
 

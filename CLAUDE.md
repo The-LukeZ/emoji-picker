@@ -64,7 +64,7 @@ Environment variables honored in debug or `diag` builds only:
 - `EMOJI_PICKER_SELFTEST=N`: opens and closes the picker N times, logs timings and memory, then quits.
 - `EMOJI_PICKER_HOOK_TEST=1`: hook test mode, so injected keys are matched.
 
-`TESTING.md` holds the manual desktop checklists for each feature.
+`TESTING.md` (git-ignored, local only) holds the manual desktop checklists for each feature.
 
 ## Rules for this repo
 
