@@ -5,6 +5,7 @@ pub mod geometry;
 pub mod hotkey;
 pub mod policy;
 pub mod recents;
+pub mod search;
 pub mod table;
 
 #[cfg(test)]
