@@ -6,6 +6,8 @@ emoji into the app you were using. It uses [Twemoji](https://github.com/jdecked/
 English search from [Emojibase](https://emojibase.dev) data, and stays out of the way of
 fullscreen games.
 
+<img width="786" height="763" alt="image" src="https://github.com/user-attachments/assets/226ccd9f-e644-489c-be0d-367cd4b1840a" />
+
 ## Install
 
 Download `emoji-picker-win-Setup.exe` from the
