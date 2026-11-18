@@ -109,7 +109,7 @@ struct Plan<'a> {
     tone_capable: bool,
 }
 
-#[allow(dead_code)] // wrapper for the atlas step; the CLI uses the missing-aware variant
+#[cfg(test)]
 pub fn build_table(
     data: &[u8],
     github: &[u8],

@@ -1,7 +1,10 @@
+mod atlas;
 mod data;
 mod fetch;
 
 use anyhow::{bail, Result};
+use std::path::Path;
+use std::time::Instant;
 
 fn main() -> Result<()> {
     match std::env::args().nth(1).as_deref() {
@@ -10,8 +13,9 @@ fn main() -> Result<()> {
     }
 }
 
-/// Fetches pinned sources and builds the emoji table. Atlas output comes later.
+/// Fetches pinned sources, builds the emoji table, and writes `assets/generated`.
 fn assets() -> Result<()> {
+    let started = Instant::now();
     let svgs = fetch::twemoji_svgs()?;
     let data = fetch::emojibase("en/data.json")?;
     let github = fetch::emojibase("en/shortcodes/github.json")?;
@@ -21,5 +25,8 @@ fn assets() -> Result<()> {
     println!("pages: {}", built.table.pages.len());
     println!("sprites: {}", built.svgs.len());
     println!("missing ({}): {}", missing.len(), missing.join(" "));
+    let out_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/generated");
+    atlas::write_assets(&built, &svgs, &out_dir)?;
+    println!("done in {:.1}s", started.elapsed().as_secs_f64());
     Ok(())
 }

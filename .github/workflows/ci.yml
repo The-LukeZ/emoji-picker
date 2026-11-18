@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: |
+            target/xtask-cache
+            assets/generated
+          key: assets-${{ hashFiles('xtask/**', 'core/src/table.rs') }}
+      - name: Build assets
+        run: cargo xtask assets
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+      - name: Search performance on real data
+        run: cargo test -p emoji-core --release -- --ignored

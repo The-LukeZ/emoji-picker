@@ -35,7 +35,13 @@ fn cache_dir() -> PathBuf {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    use std::fmt::Write;
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::with_capacity(64), |mut out, b| {
+            let _ = write!(out, "{b:02x}");
+            out
+        })
 }
 
 fn download(url: &str) -> Result<Vec<u8>> {
