@@ -29,3 +29,5 @@ jobs:
         run: cargo test --workspace
       - name: Search performance on real data
         run: cargo test -p emoji-core --release -- --ignored
+      - name: Build app
+        run: cargo build --release -p emoji-picker
