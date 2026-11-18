@@ -4,6 +4,7 @@
 //! The UI thread talks to it through [`ServiceHandle`]; it reports back through `on_event`.
 
 use std::cell::{Cell, RefCell};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -736,6 +737,13 @@ unsafe extern "system" fn on_win_event(
     if id_object != OBJID_WINDOW.0 || id_child != CHILDID_SELF as i32 {
         return;
     }
+    // A panic must not unwind across this extern "system" boundary: log it and drop the event.
+    if catch_unwind(AssertUnwindSafe(|| win_event(event, hwnd))).is_err() {
+        crate::log!("service: panic in WinEvent callback (event {event:#x}), event ignored");
+    }
+}
+
+fn win_event(event: u32, hwnd: HWND) {
     let Some(svc) = service() else {
         return;
     };
@@ -750,6 +758,19 @@ unsafe extern "system" fn on_win_event(
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    // A panic must not unwind across this extern "system" boundary: log it and let Windows
+    // handle the message.
+    match catch_unwind(AssertUnwindSafe(|| handle_message(hwnd, msg, wp, lp))) {
+        Ok(res) => res,
+        Err(_) => {
+            crate::log!("service: panic handling message {msg:#x}, passed to DefWindowProcW");
+            // SAFETY: default handling with the arguments Windows gave us.
+            unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+        }
+    }
+}
+
+fn handle_message(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let Some(svc) = service() else {
         // SAFETY: default handling for messages before the service is set up.
         return unsafe { DefWindowProcW(hwnd, msg, wp, lp) };

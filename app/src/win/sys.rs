@@ -2,6 +2,7 @@
 //! running apps.
 
 use std::io;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use emoji_core::geometry::{Point, Rect};
 use emoji_core::policy::exe_file_name;
@@ -125,6 +126,17 @@ pub fn set_autostart(on: bool) -> io::Result<()> {
 unsafe extern "system" fn collect_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
     // SAFETY: lparam is the &mut Vec passed by visible_window_exes for the duration of EnumWindows.
     let names = unsafe { &mut *(lparam.0 as *mut Vec<String>) };
+    // A panic must not unwind across this extern "system" boundary: log it and stop the walk.
+    match catch_unwind(AssertUnwindSafe(|| add_window_exe(hwnd, names))) {
+        Ok(()) => true.into(),
+        Err(_) => {
+            crate::log!("sys: panic while listing windows, list cut short");
+            false.into()
+        }
+    }
+}
+
+fn add_window_exe(hwnd: HWND, names: &mut Vec<String>) {
     // SAFETY: hwnd comes from EnumWindows.
     if unsafe { IsWindowVisible(hwnd) }.as_bool() {
         if let Some(path) = exe_path(hwnd) {
@@ -134,7 +146,6 @@ unsafe extern "system" fn collect_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
             }
         }
     }
-    true.into()
 }
 
 /// Lowercased, deduplicated exe file names of all visible top-level windows.
