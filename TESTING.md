@@ -104,6 +104,12 @@ logs `insert: foreground first=.. attached=.. second=.. ok=..`. Paste mode is
 - [ ] The same four inserts into Windows Terminal.
 - [ ] Discord in paste mode (`paste_exes = ["discord.exe"]`): the emoji arrives and the
       previous clipboard text is back on the clipboard afterwards.
+- [ ] Paste mode with a screenshot (Win+Shift+S) on the clipboard: the emoji arrives and the
+      screenshot still pastes into Paint afterwards. With rich text copied from Word or a
+      browser: the formatting still pastes afterwards. With files copied in Explorer: the
+      files still paste afterwards (or, if their data cannot be read, the emoji is typed and
+      the log says `clipboard cannot be saved`).
+- [ ] Quit from the tray right after a paste: the previous clipboard content is back.
 - [ ] An admin Notepad shows the balloon "Can't type into admin windows, emoji copied to
       clipboard" and the emoji is on the clipboard.
 - [ ] Close Notepad while the picker is open, then pick: the balloon "Target window is gone,

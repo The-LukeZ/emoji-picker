@@ -36,7 +36,6 @@ use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, PostMessageW, HWND_MESSAGE};
 
 use picker::{InsertRequest, OpenRequest, Picker};
-use win::insert::InsertResult;
 use win::service::{
     spawn_service, ServiceCmd, ServiceHandle, UiEvent, SERVICE_CLASS, WM_OPEN_SETTINGS,
 };
@@ -62,12 +61,12 @@ fn on_insert(req: InsertRequest) {
         req.target,
         started.elapsed()
     );
-    if let InsertResult::CopiedOnly(reason) = result {
+    if let Some(text) = result.balloon_text() {
         SERVICE.with(|s| {
             if let Some(service) = s.borrow().as_ref() {
                 service.send(ServiceCmd::Balloon {
                     title: "Emoji picker".into(),
-                    text: reason.balloon_text().into(),
+                    text: text.into(),
                 });
             }
         });
@@ -152,6 +151,8 @@ fn on_ui_event(event: UiEvent) {
         }
         UiEvent::Quit => {
             log!("ui: Quit (private {private_kb} KB)");
+            // Give the user's clipboard back now if a paste restore is still waiting.
+            win::insert::flush_pending_restore();
             let _ = slint::quit_event_loop();
         }
         // The settings and about windows come with Task 14.

@@ -87,6 +87,16 @@ fn recents_path(config_path: &std::path::Path) -> PathBuf {
     config_path.with_file_name("recents.txt")
 }
 
+/// Loads `recents.txt` into `recents` once, the first time recents are needed while
+/// enabled. Recents disabled at startup are never loaded, so without this the first pick
+/// after enabling them at runtime would overwrite the file with a near-empty list.
+fn load_recents_once(loaded: &Cell<bool>, recents: &RefCell<Recents>, path: &std::path::Path) {
+    if loaded.replace(true) {
+        return;
+    }
+    *recents.borrow_mut() = Recents::load(path);
+}
+
 /// Pushes picks in pick order, so the last pick ends up first.
 fn push_picks(recents: &mut Recents, base_hexcodes: &[String]) {
     for hex in base_hexcodes {
@@ -221,6 +231,9 @@ struct Inner {
     ui: PickerWindow,
     cfg: RefCell<Arc<Config>>,
     recents: RefCell<Recents>,
+    /// `recents` holds the contents of `recents.txt` (the caller loads it when recents are
+    /// enabled at startup; otherwise it is loaded when they get enabled).
+    recents_loaded: Cell<bool>,
     index: SearchIndex,
     /// Emoji indices per tab, in `Category::ALL` order.
     categories: Vec<Vec<u32>>,
@@ -316,11 +329,13 @@ impl Picker {
             rows.clone() as Rc<dyn Model<Data = ModelRc<Tile>>>
         ));
 
+        let recents_loaded = Cell::new(cfg.recents_enabled);
         let inner = Rc::new_cyclic(|me| Inner {
             me: me.clone(),
             ui,
             cfg: RefCell::new(cfg),
             recents: RefCell::new(recents),
+            recents_loaded,
             index: SearchIndex::new(table),
             categories,
             state: RefCell::new(PickerState::default()),
@@ -376,6 +391,9 @@ impl Picker {
     pub fn set_config(&self, cfg: Arc<Config>) {
         let inner = &self.inner;
         *inner.cfg.borrow_mut() = cfg;
+        if inner.cfg().recents_enabled {
+            inner.ensure_recents();
+        }
         if matches!(inner.phase.get(), Phase::Opening | Phase::Open) {
             inner.apply_size();
             inner.refresh_all();
@@ -389,7 +407,6 @@ impl Picker {
     }
 
     /// The config as last changed by the picker (size and tone are saved from here).
-    #[allow(dead_code)] // read by the settings window (Task 15)
     pub fn config(&self) -> Arc<Config> {
         self.inner.cfg.borrow().clone()
     }
@@ -662,12 +679,22 @@ impl Inner {
         if !self.cfg().recents_enabled {
             return;
         }
+        self.ensure_recents();
         let mut recents = self.recents.borrow_mut();
         push_picks(&mut recents, base_hexcodes);
         let path = recents_path(&self.config_path);
         if let Err(e) = recents.save(&path) {
             log!("picker: saving {} failed: {e}", path.display());
         }
+    }
+
+    /// Loads `recents.txt` if it was not loaded yet (recents were off at startup).
+    fn ensure_recents(&self) {
+        load_recents_once(
+            &self.recents_loaded,
+            &self.recents,
+            &recents_path(&self.config_path),
+        );
     }
 
     fn apply_size(&self) {
@@ -1101,6 +1128,33 @@ mod tests {
             recents_path(std::path::Path::new("dir/config.toml")),
             PathBuf::from("dir/recents.txt")
         );
+    }
+
+    #[test]
+    fn recents_loaded_lazily_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recents.txt");
+        std::fs::write(
+            &path,
+            "1F525
+2764
+",
+        )
+        .unwrap();
+        let loaded = Cell::new(false);
+        let recents = RefCell::new(Recents::default());
+        load_recents_once(&loaded, &recents, &path);
+        assert!(loaded.get());
+        assert_eq!(recents.borrow().items, ["1F525", "2764"]);
+        // A pick after the load is kept: a second call does not reload the file.
+        recents.borrow_mut().push("1F600");
+        load_recents_once(&loaded, &recents, &path);
+        assert_eq!(recents.borrow().items, ["1F600", "1F525", "2764"]);
+        // Already loaded at startup: the file is not read again.
+        let loaded = Cell::new(true);
+        let recents = RefCell::new(Recents::default());
+        load_recents_once(&loaded, &recents, &path);
+        assert!(recents.borrow().items.is_empty());
     }
 
     #[test]
