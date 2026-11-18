@@ -82,6 +82,18 @@ pub struct InsertRequest {
     pub base_hexcodes: Vec<String>,
 }
 
+/// Recents file next to the config file.
+fn recents_path(config_path: &std::path::Path) -> PathBuf {
+    config_path.with_file_name("recents.txt")
+}
+
+/// Pushes picks in pick order, so the last pick ends up first.
+fn push_picks(recents: &mut Recents, base_hexcodes: &[String]) {
+    for hex in base_hexcodes {
+        recents.push(hex);
+    }
+}
+
 /// Splits the visible emoji list into grid rows of `cols` entries; the last row may be short.
 fn build_rows(indices: &[u32], cols: usize) -> Vec<Vec<u32>> {
     indices.chunks(cols.max(1)).map(<[u32]>::to_vec).collect()
@@ -636,8 +648,25 @@ impl Inner {
             "picker: hidden (private {} KB)",
             sys::private_bytes() / 1024
         );
-        if let Some(req) = self.pending_insert.borrow_mut().take() {
+        let pending = self.pending_insert.borrow_mut().take();
+        if let Some(req) = pending {
+            let picked = req.base_hexcodes.clone();
             (self.on_insert)(req);
+            self.record_picks(&picked);
+        }
+    }
+
+    /// Adds the inserted emoji to recents and saves them, unless recents are disabled (then
+    /// they are not touched at all).
+    fn record_picks(&self, base_hexcodes: &[String]) {
+        if !self.cfg().recents_enabled {
+            return;
+        }
+        let mut recents = self.recents.borrow_mut();
+        push_picks(&mut recents, base_hexcodes);
+        let path = recents_path(&self.config_path);
+        if let Err(e) = recents.save(&path) {
+            log!("picker: saving {} failed: {e}", path.display());
         }
     }
 
@@ -1059,6 +1088,20 @@ impl Picker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picks_pushed_last_first() {
+        let mut recents = Recents {
+            items: vec!["1F600".into(), "1F44D".into()],
+        };
+        let picks: Vec<String> = ["1F44D", "2764", "1F525"].map(String::from).to_vec();
+        push_picks(&mut recents, &picks);
+        assert_eq!(recents.items, ["1F525", "2764", "1F44D", "1F600"]);
+        assert_eq!(
+            recents_path(std::path::Path::new("dir/config.toml")),
+            PathBuf::from("dir/recents.txt")
+        );
+    }
 
     #[test]
     fn rows_split_by_cols() {

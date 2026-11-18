@@ -90,3 +90,25 @@ scripts must send their keys with `dwExtraInfo = 0`. The log shows
 - [ ] Making `SetWindowsHookExW` fail (or a debugger forcing `is_lost`) shows the balloon
       "Win+. could not be captured, switching to Ctrl+Shift+Space", and `config.toml` then has
       `hotkey = "Ctrl+Shift+Space"` with tone and size unchanged.
+
+## Inserting the emoji (Task 14)
+
+Setup: a debug build (logs go to stderr). Each insert logs
+`ui: insert "<text>" into <hwnd>: <result> in <time>`; a slow or refused foreground switch also
+logs `insert: foreground first=.. attached=.. second=.. ok=..`. Paste mode is
+`insert_mode = "paste"` or the exe's file name in `paste_exes`.
+
+- [ ] Insert 👍🏽, 🏳️‍🌈, #️⃣ and a 3-item Shift queue into Notepad: the text arrives exactly.
+- [ ] The same four inserts into Chrome (a text field).
+- [ ] The same four inserts into Discord.
+- [ ] The same four inserts into Windows Terminal.
+- [ ] Discord in paste mode (`paste_exes = ["discord.exe"]`): the emoji arrives and the
+      previous clipboard text is back on the clipboard afterwards.
+- [ ] An admin Notepad shows the balloon "Can't type into admin windows, emoji copied to
+      clipboard" and the emoji is on the clipboard.
+- [ ] Close Notepad while the picker is open, then pick: the balloon "Target window is gone,
+      emoji copied to clipboard" shows and the emoji is on the clipboard.
+- [ ] The recents row shows the last picks (newest first) after reopening the picker and
+      after restarting the app.
+- [ ] After a Shift+Enter queue (Shift still held at the final pick), no modifier stays stuck
+      and the typed text is unchanged.

@@ -23,10 +23,10 @@ mod ui {
     slint::include_modules!();
 }
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use emoji_core::config::Config;
 use emoji_core::recents::Recents;
@@ -35,12 +35,43 @@ use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, LPARAM, WPA
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, PostMessageW, HWND_MESSAGE};
 
-use picker::{OpenRequest, Picker};
-use win::service::{spawn_service, ServiceCmd, UiEvent, SERVICE_CLASS, WM_OPEN_SETTINGS};
+use picker::{InsertRequest, OpenRequest, Picker};
+use win::insert::InsertResult;
+use win::service::{
+    spawn_service, ServiceCmd, ServiceHandle, UiEvent, SERVICE_CLASS, WM_OPEN_SETTINGS,
+};
 
 thread_local! {
     /// The picker, created once on the UI thread before the event loop runs.
     static PICKER: OnceCell<Picker> = const { OnceCell::new() };
+    /// The service thread handle, for balloons from the UI thread; taken at shutdown.
+    static SERVICE: RefCell<Option<ServiceHandle>> = const { RefCell::new(None) };
+}
+
+/// Called by the picker after it hid: types or pastes the pick into the target window, or
+/// copies it and tells the user why it could not be inserted.
+fn on_insert(req: InsertRequest) {
+    let cfg = PICKER
+        .with(|p| p.get().map(Picker::config))
+        .unwrap_or_default();
+    let started = Instant::now();
+    let result = win::insert::insert(&req, cfg.insert_mode, &cfg.paste_exes);
+    log!(
+        "ui: insert {:?} into {:#x}: {result:?} in {:?}",
+        req.text,
+        req.target,
+        started.elapsed()
+    );
+    if let InsertResult::CopiedOnly(reason) = result {
+        SERVICE.with(|s| {
+            if let Some(service) = s.borrow().as_ref() {
+                service.send(ServiceCmd::Balloon {
+                    title: "Emoji picker".into(),
+                    text: reason.balloon_text().into(),
+                });
+            }
+        });
+    }
 }
 
 /// True when this is the first instance. The mutex handle is kept until the process exits.
@@ -159,10 +190,7 @@ fn main() {
     } else {
         Recents::default()
     };
-    let picker = Picker::new(config.clone(), recents, |req| {
-        // Typing into the target window comes with Task 14.
-        log!("ui: insert {req:?}");
-    });
+    let picker = Picker::new(config.clone(), recents, on_insert);
     #[cfg(any(debug_assertions, feature = "diag"))]
     if let Some(cycles) = std::env::var("EMOJI_PICKER_SELFTEST")
         .ok()
@@ -174,21 +202,24 @@ fn main() {
         let _ = p.set(picker);
     });
 
-    let service = spawn_service(config, |event| {
+    let handle = spawn_service(config, |event| {
         let text = format!("{event:?}");
         if let Err(e) = slint::invoke_from_event_loop(move || on_ui_event(event)) {
             log!("ui: dropped {text}: {e}");
         }
     });
     if let Some(text) = warning {
-        service.send(ServiceCmd::Balloon {
+        handle.send(ServiceCmd::Balloon {
             title: "Emoji picker settings".into(),
             text,
         });
     }
+    SERVICE.with(|s| *s.borrow_mut() = Some(handle));
 
     if let Err(e) = slint::run_event_loop_until_quit() {
         log!("event loop failed: {e}");
     }
-    service.shutdown();
+    if let Some(handle) = SERVICE.with(|s| s.borrow_mut().take()) {
+        handle.shutdown();
+    }
 }
