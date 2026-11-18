@@ -20,6 +20,15 @@ pub enum HookAction {
     MaskThenPass,
 }
 
+/// Physical key state (`GetAsyncKeyState` high bit) read inside the hook, before the current
+/// event updates it: for a key that is being pressed, `true` means autorepeat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Physical {
+    pub lwin: bool,
+    pub rwin: bool,
+    pub period: bool,
+}
+
 #[derive(Debug, Default)]
 pub struct WinPeriodMatcher {
     lwin: bool,
@@ -44,6 +53,34 @@ impl WinPeriodMatcher {
 
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// Like [`Self::on_key`], but first repairs state that missed key-ups left behind.
+    ///
+    /// Key-ups can fail to reach the hook (seen while our picker takes the foreground). On a
+    /// fresh period press (`phys.period` still up, so not autorepeat) the matcher rebuilds
+    /// its state from the physical Win keys, so a stale flag can neither eat a period nor
+    /// turn the next Win+. into "autorepeat". `phys` is only read for a period key-down.
+    pub fn on_key_checked(
+        &mut self,
+        vk: u16,
+        down: bool,
+        injected: bool,
+        phys: Physical,
+    ) -> HookAction {
+        if vk == VK_OEM_PERIOD && down && !injected && !phys.period {
+            self.resync(phys.lwin, phys.rwin);
+        }
+        self.on_key(vk, down, injected)
+    }
+
+    /// Forgets everything and takes the Win keys' state from the caller.
+    pub fn resync(&mut self, lwin: bool, rwin: bool) {
+        *self = Self {
+            lwin,
+            rwin,
+            ..Self::default()
+        };
     }
 
     fn win_held(&self) -> bool {
@@ -96,6 +133,90 @@ impl WinPeriodMatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const WIN_HELD: Physical = Physical {
+        lwin: true,
+        rwin: false,
+        period: false,
+    };
+
+    #[test]
+    fn stale_period_down_then_fresh_press_with_win_opens() {
+        let mut m = WinPeriodMatcher::default();
+        let p = Physical::default();
+        assert_eq!(m.on_key_checked(VK_LWIN, true, false, p), HookAction::Pass);
+        assert_eq!(
+            m.on_key_checked(VK_OEM_PERIOD, true, false, WIN_HELD),
+            HookAction::Open
+        );
+        // The period and Win key-ups never arrive. Next press:
+        assert_eq!(m.on_key_checked(VK_LWIN, true, false, p), HookAction::Pass);
+        assert_eq!(
+            m.on_key_checked(VK_OEM_PERIOD, true, false, WIN_HELD),
+            HookAction::Open
+        );
+    }
+
+    #[test]
+    fn stale_win_then_plain_period_passes() {
+        let mut m = WinPeriodMatcher::default();
+        let p = Physical::default();
+        m.on_key_checked(VK_LWIN, true, false, p);
+        m.on_key_checked(VK_OEM_PERIOD, true, false, WIN_HELD);
+        // Both key-ups are missed; Win is physically up now.
+        assert_eq!(
+            m.on_key_checked(VK_OEM_PERIOD, true, false, p),
+            HookAction::Pass
+        );
+        assert_eq!(
+            m.on_key_checked(VK_OEM_PERIOD, false, false, p),
+            HookAction::Pass
+        );
+    }
+
+    #[test]
+    fn autorepeat_after_open_stays_swallowed() {
+        let mut m = WinPeriodMatcher::default();
+        let p = Physical::default();
+        let repeat = Physical {
+            period: true,
+            ..WIN_HELD
+        };
+        m.on_key_checked(VK_LWIN, true, false, p);
+        assert_eq!(
+            m.on_key_checked(VK_OEM_PERIOD, true, false, WIN_HELD),
+            HookAction::Open
+        );
+        assert_eq!(
+            m.on_key_checked(VK_OEM_PERIOD, true, false, repeat),
+            HookAction::Swallow
+        );
+        assert_eq!(
+            m.on_key_checked(VK_OEM_PERIOD, true, false, repeat),
+            HookAction::Swallow
+        );
+        assert_eq!(
+            m.on_key_checked(VK_OEM_PERIOD, false, false, WIN_HELD),
+            HookAction::Swallow
+        );
+        assert_eq!(
+            m.on_key_checked(VK_LWIN, false, false, p),
+            HookAction::MaskThenPass
+        );
+    }
+
+    #[test]
+    fn rwin_counts_in_resync() {
+        let mut m = WinPeriodMatcher::default();
+        let rwin = Physical {
+            rwin: true,
+            ..Physical::default()
+        };
+        assert_eq!(
+            m.on_key_checked(VK_OEM_PERIOD, true, false, rwin),
+            HookAction::Open
+        );
+    }
 
     #[test]
     fn win_period_opens_and_masks() {

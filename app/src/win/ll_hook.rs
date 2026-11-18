@@ -13,7 +13,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use emoji_core::hook_matcher::{
-    HookAction, WinPeriodMatcher, VK_LWIN, VK_MASK, VK_OEM_PERIOD, VK_RWIN,
+    HookAction, Physical, WinPeriodMatcher, VK_LWIN, VK_MASK, VK_OEM_PERIOD, VK_RWIN,
 };
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -250,39 +250,31 @@ pub fn tap_mask_key() {
     let _ = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
 }
 
-/// A fresh period press (not autorepeat: the async state is still up while the hook runs).
-/// Key-ups can go missing (seen in the desktop test: the period and Win key-ups after an
-/// open did not reach this hook while the picker took the foreground), which leaves the
-/// matcher believing the period or Win is still held. Rebuild its state from the physical
-/// key state, so a stale flag can never eat a period or block the next Win+.
-fn resync(m: &mut WinPeriodMatcher) {
-    m.reset();
-    for win in [VK_LWIN, VK_RWIN] {
-        if key_down(win) {
-            m.on_key(win, true, false);
-        }
-    }
-}
-
 /// Matches one key event. Returns true when the event must be eaten.
 fn on_key(kb: &KBDLLHOOKSTRUCT, wp: WPARAM) -> bool {
     let down = matches!(wp.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
     let own = kb.dwExtraInfo == OWN_INPUT_MARKER;
     let injected = own || ((kb.flags & LLKHF_INJECTED).0 != 0 && !TEST_MODE.with(|t| t.get()));
     let vk = u16::try_from(kb.vkCode).unwrap_or(0);
-    let action = MATCHER.with(|m| match m.try_borrow_mut() {
-        Ok(mut m) => {
-            if vk == VK_OEM_PERIOD && down && !injected && !key_down(VK_OEM_PERIOD) {
-                resync(&mut m);
-            }
-            m.on_key(vk, down, injected)
+    // Physical state is only needed for a period key-down (the matcher's resync rule).
+    let phys = if vk == VK_OEM_PERIOD && down {
+        Physical {
+            lwin: key_down(VK_LWIN),
+            rwin: key_down(VK_RWIN),
+            period: key_down(VK_OEM_PERIOD),
         }
+    } else {
+        Physical::default()
+    };
+    let action = MATCHER.with(|m| match m.try_borrow_mut() {
+        Ok(mut m) => m.on_key_checked(vk, down, injected, phys),
         Err(_) => HookAction::Pass,
     });
-    if TEST_MODE.with(|t| t.get()) && matches!(vk, VK_LWIN | VK_RWIN | VK_OEM_PERIOD | VK_MASK) {
-        // Test mode only (debug and `diag` builds): trace the keys the matcher cares about.
+    if TEST_MODE.with(|t| t.get()) {
+        // Test mode only (debug and `diag` builds): trace every key, so a log shows whether
+        // the hook goes deaf (for example while the picker has the foreground).
         crate::log!(
-            "ll-hook: vk={vk:#x} down={down} flags={:#x} own={own} action={action:?} lwin_async={}",
+            "ll-hook: vk={vk:#x} down={down} flags={:#x} own={own} injected={injected} action={action:?} lwin_async={}",
             kb.flags.0,
             key_down(VK_LWIN)
         );
@@ -300,7 +292,8 @@ fn on_key(kb: &KBDLLHOOKSTRUCT, wp: WPARAM) -> bool {
                     }
                 });
                 // Mask now, while Win is still held: the Win key-up may never reach this
-                // hook (see `resync`), and a mask injected there lands after the key-up.
+                // hook (see `WinPeriodMatcher::on_key_checked`), and a mask injected there
+                // lands after the key-up.
                 tap_mask_key();
                 true
             } else {
