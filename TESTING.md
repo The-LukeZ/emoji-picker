@@ -16,6 +16,11 @@ blocklist = ["notepad.exe"]
 - [ ] Hotkey in Explorer logs `OpenPicker`; in Notepad nothing is logged, and Notepad receives Ctrl+Shift+Space.
 - [ ] A fullscreen browser video blocks the hotkey; leaving fullscreen restores it.
 - [x] Same window going fullscreen without a focus change: browser video fullscreen and F11 in a browser that is already in front block the hotkey (the combo reaches the browser); leaving fullscreen restores it without switching windows. (Verified automatically with a borderless WinForms window resized in place, not with a real browser.)
+- [ ] A maximized normal window is not fullscreen: with the taskbar set to auto-hide, maximize
+      Explorer (not blocklisted) and press the hotkey: the picker opens and the log shows
+      `fullscreen=false`. Repeat on a second monitor that has no taskbar.
+- [ ] Borderless fullscreen still blocks: F11 in a browser and a borderless game on the same
+      monitors still log `fullscreen=true` and the hotkey reaches the app.
 - [ ] Starting a second `emoji-picker.exe` exits it at once, logs `OpenSettings` in the first, and only one tray icon exists.
 - [ ] Another app holding Ctrl+Shift+Space (register it in a scratch program) gives the balloon.
 

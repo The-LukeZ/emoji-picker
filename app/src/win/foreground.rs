@@ -11,8 +11,8 @@ use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetCursorPos, GetGUIThreadInfo, GetShellWindow, GetWindowRect,
-    GetWindowThreadProcessId, GUITHREADINFO,
+    GetClassNameW, GetCursorPos, GetGUIThreadInfo, GetShellWindow, GetWindowLongW, GetWindowRect,
+    GetWindowThreadProcessId, IsZoomed, GUITHREADINFO, GWL_STYLE, WS_CAPTION,
 };
 
 fn to_rect(r: RECT) -> Rect {
@@ -88,7 +88,18 @@ pub fn is_window_fullscreen(hwnd: HWND) -> bool {
     if !unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
         return false;
     }
-    is_fullscreen(to_rect(window), to_rect(info.rcMonitor))
+    // SAFETY: a stale hwnd gives false.
+    let maximized = unsafe { IsZoomed(hwnd) }.as_bool();
+    // SAFETY: a stale hwnd gives 0.
+    let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
+    // WS_CAPTION is two bits (border + dlgframe); a normal title bar has both.
+    let has_caption = style & WS_CAPTION.0 == WS_CAPTION.0;
+    is_fullscreen(
+        to_rect(window),
+        to_rect(info.rcMonitor),
+        maximized,
+        has_caption,
+    )
 }
 
 /// Exe and fullscreen state of `hwnd` (a null hwnd gives an unknown exe).

@@ -19,8 +19,20 @@ pub struct Point {
     pub y: i32,
 }
 
-/// True when `window` covers the whole `monitor` rect (shell windows are excluded by the caller).
-pub fn is_fullscreen(window: Rect, monitor: Rect) -> bool {
+/// True when `window` is a fullscreen app on `monitor` (shell windows are excluded by the caller).
+///
+/// A normal maximized window (`maximized` and `has_caption`) is never fullscreen: its window
+/// rect includes the invisible resize borders, so on a monitor without a visible taskbar it
+/// covers the whole monitor rect. Borderless and exclusive fullscreen windows have no caption.
+pub fn is_fullscreen(window: Rect, monitor: Rect, maximized: bool, has_caption: bool) -> bool {
+    if maximized && has_caption {
+        return false;
+    }
+    covers(window, monitor)
+}
+
+/// True when `window` covers the whole `monitor` rect.
+fn covers(window: Rect, monitor: Rect) -> bool {
     window.left <= monitor.left
         && window.top <= monitor.top
         && window.right >= monitor.right
@@ -70,16 +82,19 @@ mod tests {
             right: 1920,
             bottom: 1080,
         };
-        assert!(is_fullscreen(mon, mon));
-        assert!(is_fullscreen(
-            Rect {
-                left: -8,
-                top: -8,
-                right: 1928,
-                bottom: 1088
-            },
-            mon
-        ));
+        let maximized_rect = Rect {
+            left: -8,
+            top: -8,
+            right: 1928,
+            bottom: 1088,
+        };
+        // borderless fullscreen (game, F11 browser)
+        assert!(is_fullscreen(mon, mon, false, false));
+        assert!(is_fullscreen(maximized_rect, mon, false, false));
+        // borderless window that reports maximized
+        assert!(is_fullscreen(maximized_rect, mon, true, false));
+        // captioned window sized over the monitor but not maximized
+        assert!(is_fullscreen(mon, mon, false, true));
         // maximized, taskbar visible
         assert!(!is_fullscreen(
             Rect {
@@ -88,8 +103,44 @@ mod tests {
                 right: 1920,
                 bottom: 1032
             },
-            mon
+            mon,
+            false,
+            false
         ));
+    }
+
+    #[test]
+    fn maximized_captioned_window_is_not_fullscreen() {
+        let mon = Rect {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        // auto-hide taskbar or a monitor without a taskbar: the work area is the monitor rect,
+        // so a normal maximized window with its resize borders covers the whole monitor.
+        let maximized_rect = Rect {
+            left: -8,
+            top: -8,
+            right: 1928,
+            bottom: 1088,
+        };
+        assert!(!is_fullscreen(maximized_rect, mon, true, true));
+        // same on a secondary monitor to the right
+        let second = Rect {
+            left: 1920,
+            top: 0,
+            right: 4480,
+            bottom: 1440,
+        };
+        let on_second = Rect {
+            left: 1912,
+            top: -8,
+            right: 4488,
+            bottom: 1448,
+        };
+        assert!(!is_fullscreen(on_second, second, true, true));
+        assert!(is_fullscreen(on_second, second, true, false));
     }
 
     #[test]
