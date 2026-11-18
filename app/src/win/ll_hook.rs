@@ -12,7 +12,9 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use emoji_core::hook_matcher::{HookAction, WinPeriodMatcher, VK_LWIN, VK_MASK, VK_RWIN};
+use emoji_core::hook_matcher::{
+    HookAction, WinPeriodMatcher, VK_LWIN, VK_MASK, VK_OEM_PERIOD, VK_RWIN,
+};
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -254,6 +256,14 @@ fn on_key(kb: &KBDLLHOOKSTRUCT, wp: WPARAM) -> bool {
         Ok(mut m) => m.on_key(vk, down, injected),
         Err(_) => HookAction::Pass,
     });
+    if TEST_MODE.with(|t| t.get()) && matches!(vk, VK_LWIN | VK_RWIN | VK_OEM_PERIOD | VK_MASK) {
+        // Test mode only (debug and `diag` builds): trace the keys the matcher cares about.
+        crate::log!(
+            "ll-hook: vk={vk:#x} down={down} flags={:#x} own={own} action={action:?} lwin_async={}",
+            kb.flags.0,
+            key_down(VK_LWIN)
+        );
+    }
     match action {
         HookAction::Pass => false,
         HookAction::Swallow => true,
