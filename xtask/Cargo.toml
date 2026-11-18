@@ -1,0 +1,15 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+emoji-core = { path = "../core" }
+anyhow = "1"
+flate2 = "1"
+serde.workspace = true
+serde_json = "1"
+sha2 = "0.10"
+tar = "0.4"
+ureq = "3"
