@@ -85,16 +85,20 @@ impl LlHook {
     }
 
     /// (Re)installs the hook with a fresh matcher. Posts to the hook thread, then waits up to
-    /// half a second for the result so a failure shows in [`LlHook::is_lost`] right away.
-    pub fn install(&self) {
+    /// half a second for the result: `Some(true)` installed, `Some(false)` Windows refused,
+    /// `None` no answer in time (the hook thread will still finish the install).
+    pub fn install(&self) -> Option<bool> {
         while self.results.try_recv().is_ok() {}
+        self.lost.store(false, Ordering::SeqCst);
         if !self.post(WM_INSTALL) {
             self.lost.store(true, Ordering::SeqCst);
-            return;
+            return Some(false);
         }
-        if self.results.recv_timeout(INSTALL_WAIT).is_err() {
+        let result = self.results.recv_timeout(INSTALL_WAIT).ok();
+        if result.is_none() {
             crate::log!("ll-hook: no install result within {INSTALL_WAIT:?}");
         }
+        result
     }
 
     /// Removes the hook. Posts to the hook thread and returns at once.
@@ -246,6 +250,20 @@ pub fn tap_mask_key() {
     let _ = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) };
 }
 
+/// A fresh period press (not autorepeat: the async state is still up while the hook runs).
+/// Key-ups can go missing (seen in the desktop test: the period and Win key-ups after an
+/// open did not reach this hook while the picker took the foreground), which leaves the
+/// matcher believing the period or Win is still held. Rebuild its state from the physical
+/// key state, so a stale flag can never eat a period or block the next Win+.
+fn resync(m: &mut WinPeriodMatcher) {
+    m.reset();
+    for win in [VK_LWIN, VK_RWIN] {
+        if key_down(win) {
+            m.on_key(win, true, false);
+        }
+    }
+}
+
 /// Matches one key event. Returns true when the event must be eaten.
 fn on_key(kb: &KBDLLHOOKSTRUCT, wp: WPARAM) -> bool {
     let down = matches!(wp.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
@@ -253,7 +271,12 @@ fn on_key(kb: &KBDLLHOOKSTRUCT, wp: WPARAM) -> bool {
     let injected = own || ((kb.flags & LLKHF_INJECTED).0 != 0 && !TEST_MODE.with(|t| t.get()));
     let vk = u16::try_from(kb.vkCode).unwrap_or(0);
     let action = MATCHER.with(|m| match m.try_borrow_mut() {
-        Ok(mut m) => m.on_key(vk, down, injected),
+        Ok(mut m) => {
+            if vk == VK_OEM_PERIOD && down && !injected && !key_down(VK_OEM_PERIOD) {
+                resync(&mut m);
+            }
+            m.on_key(vk, down, injected)
+        }
         Err(_) => HookAction::Pass,
     });
     if TEST_MODE.with(|t| t.get()) && matches!(vk, VK_LWIN | VK_RWIN | VK_OEM_PERIOD | VK_MASK) {
@@ -276,6 +299,9 @@ fn on_key(kb: &KBDLLHOOKSTRUCT, wp: WPARAM) -> bool {
                         f();
                     }
                 });
+                // Mask now, while Win is still held: the Win key-up may never reach this
+                // hook (see `resync`), and a mask injected there lands after the key-up.
+                tap_mask_key();
                 true
             } else {
                 reset_matcher();

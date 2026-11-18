@@ -59,6 +59,9 @@ const HOTKEY_ID: i32 = 1;
 /// Timer that reinstalls the Win+. hook: Windows removes a slow hook without telling us.
 const REHOOK_TIMER: usize = 1;
 const REHOOK_MS: u32 = 60_000;
+/// One-shot timer: retry a failed hook install once before falling back to Ctrl+Shift+Space.
+const RETRY_TIMER: usize = 2;
+const RETRY_MS: u32 = 1_000;
 const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
 
 #[derive(Debug, Clone)]
@@ -153,6 +156,10 @@ struct Service {
     ll_hook: LlHook,
     /// Set after a failure balloon so foreground changes do not repeat it.
     fail_notified: Cell<bool>,
+    /// The current hook install is the retry after a failure: a second failure falls back.
+    retrying: Cell<bool>,
+    /// Set while switching from Win+. to the fallback preset, for the combined balloon text.
+    hook_fallback: Cell<bool>,
     /// Last foreground window of another app, the target for "Open picker" from the tray.
     last_target: Cell<isize>,
     /// Current foreground window and its last probe, so resize events need no exe lookup.
@@ -321,6 +328,8 @@ fn run(
         armed: Cell::new(false),
         ll_hook,
         fail_notified: Cell::new(false),
+        retrying: Cell::new(false),
+        hook_fallback: Cell::new(false),
         last_target: Cell::new(0),
         fg_hwnd: Cell::new(0),
         fg: RefCell::new(Foreground {
@@ -498,25 +507,59 @@ impl Service {
                     }
                     Err(e) => {
                         crate::log!("service: RegisterHotKey failed: {e}");
-                        self.fail("Hotkey is taken by another app");
+                        if self.hook_fallback.get() {
+                            self.fail(&format!(
+                                "Win+. could not be captured and {} is taken by another app",
+                                Hotkey::presets()[1]
+                            ));
+                        } else {
+                            self.fail("Hotkey is taken by another app");
+                        }
                     }
                 }
             }
-            Mode::WinPeriod => {
-                self.ll_hook.install();
-                if self.ll_hook.is_lost() {
+            Mode::WinPeriod => self.arm_hook(),
+        }
+    }
+
+    /// Installs the Win+. hook and starts its reinstall timer. A refused install is retried
+    /// once after a second; only a failed retry falls back to Ctrl+Shift+Space.
+    fn arm_hook(&self) {
+        match self.ll_hook.install() {
+            Some(true) => {}
+            // The hook thread did not answer in time; it still installs. Keep Win+.: a real
+            // failure shows up at the next reinstall.
+            None => crate::log!("service: hook install unconfirmed, keeping Win+."),
+            Some(false) => {
+                if self.retrying.get() {
                     // Switch presets outside this call chain (set_config runs it again).
                     // SAFETY: plain post to our own window.
                     let _ = unsafe {
                         PostMessageW(Some(self.msg_hwnd), WM_HOOK_FAILED, WPARAM(0), LPARAM(0))
                     };
-                    return;
+                } else {
+                    crate::log!("service: hook install failed, retrying in {RETRY_MS} ms");
+                    // SAFETY: msg_hwnd is our window on this thread.
+                    unsafe { SetTimer(Some(self.msg_hwnd), RETRY_TIMER, RETRY_MS, None) };
                 }
-                self.armed.set(true);
-                // SAFETY: msg_hwnd is our window on this thread; same id replaces the timer.
-                unsafe { SetTimer(Some(self.msg_hwnd), REHOOK_TIMER, REHOOK_MS, None) };
+                return;
             }
         }
+        self.armed.set(true);
+        // SAFETY: msg_hwnd is our window on this thread; same id replaces the timer.
+        unsafe { SetTimer(Some(self.msg_hwnd), REHOOK_TIMER, REHOOK_MS, None) };
+    }
+
+    /// The one-shot retry after a failed install.
+    fn retry_hook(&self) {
+        // SAFETY: the timer was set on msg_hwnd by this thread.
+        let _ = unsafe { KillTimer(Some(self.msg_hwnd), RETRY_TIMER) };
+        if self.mode.get() != Mode::WinPeriod || self.armed.get() {
+            return;
+        }
+        self.retrying.set(true);
+        self.update_hotkey("hook retry");
+        self.retrying.set(false);
     }
 
     /// Releases the hotkey (unregister, or remove the hook and its reinstall timer).
@@ -551,26 +594,36 @@ impl Service {
         if lwin < 0 || rwin < 0 {
             return;
         }
-        self.ll_hook.install();
-        if self.ll_hook.is_lost() {
-            self.hook_failed();
+        if self.ll_hook.install() == Some(false) {
+            // The failed install already removed the old hook: disarm and retry once.
+            self.armed.set(false);
+            // SAFETY: the timer was set on msg_hwnd by this thread.
+            let _ = unsafe { KillTimer(Some(self.msg_hwnd), REHOOK_TIMER) };
+            crate::log!("service: hook reinstall failed, retrying in {RETRY_MS} ms");
+            // SAFETY: msg_hwnd is our window on this thread.
+            unsafe { SetTimer(Some(self.msg_hwnd), RETRY_TIMER, RETRY_MS, None) };
         }
     }
 
     /// Installing the hook failed: tell the user and fall back to Ctrl+Shift+Space.
     fn hook_failed(&self) {
-        if self.mode.get() != Mode::WinPeriod || !self.ll_hook.is_lost() {
+        if self.mode.get() != Mode::WinPeriod || self.armed.get() || !self.ll_hook.is_lost() {
             return;
         }
         let fallback = Hotkey::presets()[1];
-        crate::log!("service: Win+. hook failed, switching to {fallback}");
-        self.tray.balloon(
-            "Emoji picker",
-            &format!("Win+. could not be captured, switching to {fallback}"),
-        );
+        crate::log!("service: Win+. hook failed twice, switching to {fallback}");
         let mut cfg = (**self.cfg.borrow()).clone();
         cfg.hotkey = Some(fallback);
+        self.hook_fallback.set(true);
         self.set_config(Arc::new(cfg));
+        self.hook_fallback.set(false);
+        // If registering the fallback failed, `fail` already showed the combined text.
+        if !self.fail_notified.get() {
+            self.tray.balloon(
+                "Emoji picker",
+                &format!("Win+. could not be captured, switching to {fallback}"),
+            );
+        }
         // The UI thread owns the config file (the picker saves tone and size there too).
         self.emit(UiEvent::HotkeySwitched(fallback));
     }
@@ -684,6 +737,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_HOOK_FAILED => svc.hook_failed(),
         WM_TIMER if wp.0 == REHOOK_TIMER => svc.rehook(),
+        WM_TIMER if wp.0 == RETRY_TIMER => svc.retry_hook(),
         WM_WTSSESSION_CHANGE => {
             crate::log!("service: session change {}", wp.0);
             svc.ll_hook.reset();
