@@ -89,6 +89,10 @@ pub enum ServiceCmd {
     SetConfig(Arc<Config>),
     #[allow(dead_code)] // sent by the settings window (Task 14)
     SetPaused(bool),
+    /// Releases the hotkey while the settings or first-run window records a new one (so the
+    /// keys reach the recorder), and arms it again with `false`. Separate from the tray's
+    /// pause, which it never changes.
+    SuspendHotkey(bool),
     Balloon {
         title: String,
         text: String,
@@ -151,6 +155,8 @@ struct Service {
     /// What the configured hotkey needs.
     mode: Cell<Mode>,
     paused: Cell<bool>,
+    /// A hotkey is being recorded (see [`ServiceCmd::SuspendHotkey`]).
+    suspended: Cell<bool>,
     /// The hotkey is live: registered (combo) or hook installed (Win+.).
     armed: Cell<bool>,
     /// Keyboard hook thread for Win+.; idle unless `mode` is `WinPeriod`.
@@ -326,6 +332,7 @@ fn run(
         cfg: RefCell::new(cfg.clone()),
         mode: Cell::new(Mode::Off),
         paused: Cell::new(false),
+        suspended: Cell::new(false),
         armed: Cell::new(false),
         ll_hook,
         fail_notified: Cell::new(false),
@@ -402,6 +409,11 @@ impl Service {
                 ServiceCmd::SetConfig(cfg) => self.set_config(cfg),
                 ServiceCmd::SetPaused(p) => {
                     self.paused.set(p);
+                    self.refresh();
+                }
+                ServiceCmd::SuspendHotkey(s) => {
+                    crate::log!("service: hotkey suspended={s}");
+                    self.suspended.set(s);
                     self.refresh();
                 }
                 ServiceCmd::Balloon { title, text } => self.tray.balloon(&title, &text),
@@ -484,7 +496,7 @@ impl Service {
         }
         let info = self.fg.borrow().clone();
         let cfg = self.cfg.borrow().clone();
-        let allowed = hotkey_allowed(&info, &cfg, self.paused.get());
+        let allowed = hotkey_allowed(&info, &cfg, self.paused.get() || self.suspended.get());
         crate::log!(
             "service: {why} {:?} fullscreen={} allowed={allowed}",
             info.exe.as_deref().map(exe_file_name),

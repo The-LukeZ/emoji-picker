@@ -136,7 +136,9 @@ changes for the automated driver (see `app/src/settings.rs`).
 - [ ] Delete the config and start: the first-run dialog appears. Choose each option once
       (restart with a deleted config each time): Win+. (preselected), Ctrl+Shift+Space, and
       Custom (records the next key combination; Shift+A shows an inline error, Ctrl+Alt+E
-      shows the AltGr warning). Closing the dialog with X applies Win+.
+      shows the AltGr warning). Closing the dialog with X applies the selected option
+      (Ctrl+Shift+Space after selecting it with Space, a valid recorded Custom key), or Win+.
+      while Custom has no valid recording.
 - [ ] Changing the hotkey in settings takes effect without a restart (old hotkey stops, new
       one opens the picker).
 - [ ] "Add current game" lists the running apps with windows; clicking Add moves one to the
@@ -148,11 +150,22 @@ changes for the automated driver (see `app/src/settings.rs`).
 - [ ] All three windows work with the keyboard only: Tab moves through the controls, Up and
       Down move between the hotkey options, Space selects, Enter confirms the first-run
       dialog, Esc closes settings and About.
+- [ ] Up and Down on the hotkey options only move the focus ring: the saved hotkey does not
+      change (settings) and arrowing onto Custom does not start recording. Space or a click
+      on Custom starts recording (when there is no recorded key yet), as does Record. Same in
+      the first-run dialog, where Enter applies the selected option, not the focused one.
+      (Covered headlessly by `hotkey_radio_arrows_only_move_focus`.)
+- [ ] While recording, the current hotkey is off: pressing it is recorded (or rejected)
+      instead of opening the picker. It works again after a recording ends by any path:
+      a valid key, an error (Shift+A), Esc, switching to another window, or closing the
+      settings window or the first-run dialog with X. The debug log shows
+      `service: hotkey suspended=true` and then `=false`.
 - [ ] Another app holding the chosen hotkey: the balloon shows and the settings hotkey field
       turns red; a hand-edited invalid hotkey (`hotkey = "A"`) is red too.
 - [ ] Disable recently used emojis: the recents row disappears and `recents.txt` is deleted;
       turning it back on starts with an empty row.
 - [ ] Settings, setup and About windows show the app icon in the title bar and taskbar.
 
-Note: while recording a custom hotkey, the current hotkey still works (pressing it opens the
-picker instead of being recorded).
+Note: recording Win+. under Custom may not work while the Win+. hook is suspended, because
+Windows can take Win+. for its own emoji panel. Win+. has its own option, so this only
+matters for Custom.

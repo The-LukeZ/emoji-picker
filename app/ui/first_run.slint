@@ -1,5 +1,7 @@
 // First-run dialog: choose the hotkey. Shown while `hotkey` is missing from the config.
-// Enter or OK applies the selected option; closing the window applies Win+. (preselected).
+// Enter or OK applies the selected option. Closing the window applies the selected option too,
+// or Win+. while Custom has no valid recording. The arrow keys only move the focus; Space or a
+// click selects.
 
 import { Button, Palette } from "std-widgets.slint";
 import { HotkeyChooser } from "settings.slint";
@@ -45,6 +47,8 @@ export component FirstRunWindow inherits Window {
         VerticalLayout {
             padding: 16px;
             spacing: 12px;
+            // Extra height goes below the content: the OK button keeps its natural height.
+            alignment: start;
 
             Text {
                 text: "Welcome to Emoji picker";

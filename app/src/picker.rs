@@ -413,7 +413,7 @@ impl Picker {
     pub fn save_config(&self, cfg: Arc<Config>) {
         let path = &self.inner.config_path;
         if let Err(e) = cfg.save(path) {
-            log!("picker: saving {} failed: {e}", path.display());
+            crate::settings::config_save_failed(path, &e);
         }
         self.set_config(cfg);
     }
@@ -988,7 +988,7 @@ impl Inner {
         change(&mut cfg);
         let path = &self.config_path;
         if let Err(e) = cfg.save(path) {
-            log!("picker: saving {} failed: {e}", path.display());
+            crate::settings::config_save_failed(path, &e);
         }
         *self.cfg.borrow_mut() = Arc::new(cfg);
     }

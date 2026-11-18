@@ -5,8 +5,9 @@
 
 import { Button, CheckBox, ComboBox, GroupBox, LineEdit, Palette, ScrollView } from "std-widgets.slint";
 
-// One option of a radio list. Space selects it, Up and Down move to the neighbour (the parent
-// handles `arrow` by focusing and selecting it). Enter is left to the window.
+// One option of a radio list. Space or a click selects it (`activated`). Up and Down call
+// `arrow`; the parent decides what that does (the hotkey choices only move the focus). Enter
+// is left to the window.
 export component Radio inherits Rectangle {
     in property <string> text;
     in property <bool> checked;
@@ -98,7 +99,9 @@ export component HotkeyChooser inherits VerticalLayout {
         }
     }
 
-    function go(i: int) {
+    // Arrow keys only move the focus: selecting an option applies a hotkey (or starts
+    // recording for Custom), so that needs Space or a click.
+    function move-to(i: int) {
         if (i == 0) {
             r0.focus();
         } else if (i == 1) {
@@ -106,6 +109,10 @@ export component HotkeyChooser inherits VerticalLayout {
         } else {
             r2.focus();
         }
+    }
+
+    function pick(i: int) {
+        root.move-to(i);
         root.chosen(i);
     }
 
@@ -122,10 +129,10 @@ export component HotkeyChooser inherits VerticalLayout {
                 text: "Replace the Windows emoji picker: Win+.";
                 checked: root.choice == 0;
                 activated => {
-                    root.go(0);
+                    root.pick(0);
                 }
                 arrow(d) => {
-                    root.go(d > 0 ? 1 : 2);
+                    root.move-to(d > 0 ? 1 : 2);
                 }
             }
 
@@ -133,10 +140,10 @@ export component HotkeyChooser inherits VerticalLayout {
                 text: "Ctrl+Shift+Space";
                 checked: root.choice == 1;
                 activated => {
-                    root.go(1);
+                    root.pick(1);
                 }
                 arrow(d) => {
-                    root.go(d > 0 ? 2 : 0);
+                    root.move-to(d > 0 ? 2 : 0);
                 }
             }
 
@@ -147,10 +154,10 @@ export component HotkeyChooser inherits VerticalLayout {
                     text: "Custom";
                     checked: root.choice == 2;
                     activated => {
-                        root.go(2);
+                        root.pick(2);
                     }
                     arrow(d) => {
-                        root.go(d > 0 ? 0 : 1);
+                        root.move-to(d > 0 ? 0 : 1);
                     }
                 }
 

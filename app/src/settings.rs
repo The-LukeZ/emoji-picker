@@ -68,6 +68,94 @@ fn choice_of(hotkey: Option<Hotkey>) -> i32 {
     }
 }
 
+/// What a key-down means to a recorder.
+#[derive(Debug, PartialEq)]
+enum RecordStep {
+    /// Not recording (any more): a second key-down queued in the same loop turn as the one
+    /// that ended the recording.
+    Ignore,
+    /// Esc without modifiers: stop recording, keep the old hotkey.
+    Cancel,
+    /// A modifier alone: keep waiting for the main key.
+    Wait,
+    /// The combination cannot be used: stop recording and show this text.
+    Reject(String),
+    /// The combination is valid.
+    Accept(Hotkey),
+}
+
+/// The step for a key-down `vk` with `mods` held. Only the first key-down while `recording`
+/// counts (modifiers alone excepted).
+fn record_step(recording: bool, vk: u16, mods: Mods) -> RecordStep {
+    if !recording {
+        return RecordStep::Ignore;
+    }
+    if vk == VK_ESCAPE && mods == Mods::default() {
+        return RecordStep::Cancel;
+    }
+    match recorded_hotkey(vk, mods) {
+        Err(HotkeyError::ModifierKeyAsKey) => RecordStep::Wait,
+        Err(e) => RecordStep::Reject(format!(
+            "{} cannot be used: {e}.",
+            Hotkey::Combo { mods, vk }
+        )),
+        Ok(h) => RecordStep::Accept(h),
+    }
+}
+
+/// What selecting a hotkey option in the settings window does.
+#[derive(Debug, PartialEq)]
+enum ChoiceAction {
+    /// Save this hotkey.
+    Apply(Hotkey),
+    /// Start recording a custom hotkey.
+    Record,
+    /// Nothing to do (Custom is already the current hotkey).
+    Keep,
+}
+
+/// Selecting option `i` (with Space or a click; the arrow keys only move the focus) in the
+/// settings window. `custom` is the window's last valid custom hotkey, `current` the saved one.
+fn settings_choice(i: i32, custom: Option<Hotkey>, current: Option<Hotkey>) -> ChoiceAction {
+    let presets = Hotkey::presets();
+    match i {
+        0 => ChoiceAction::Apply(presets[0]),
+        1 => ChoiceAction::Apply(presets[1]),
+        _ => match custom {
+            Some(h) => ChoiceAction::Apply(h),
+            None if choice_of(current) == 2 => ChoiceAction::Keep,
+            None => ChoiceAction::Record,
+        },
+    }
+}
+
+/// The first-run hotkey for option `choice`, or `None` for Custom without a valid recording.
+fn first_run_pick(choice: i32, custom: Option<Hotkey>) -> Option<Hotkey> {
+    let presets = Hotkey::presets();
+    match choice {
+        0 => Some(presets[0]),
+        1 => Some(presets[1]),
+        _ => custom,
+    }
+}
+
+/// The first-run hotkey when the dialog is closed with the X: the selected option, or Win+.
+/// while Custom has no valid recording.
+fn first_run_close_pick(choice: i32, custom: Option<Hotkey>) -> Hotkey {
+    first_run_pick(choice, custom).unwrap_or(Hotkey::WinPeriod)
+}
+
+/// A config save failed. The log is empty in release builds, so a balloon tells the user.
+pub fn config_save_failed(path: &std::path::Path, e: &std::io::Error) {
+    log!("settings: saving {} failed: {e}", path.display());
+    with_state(|s| {
+        s.service.send(ServiceCmd::Balloon {
+            title: "Emoji picker".into(),
+            text: format!("Settings could not be saved: {e}"),
+        });
+    });
+}
+
 /// `input` as a blocklist or paste list entry: trimmed, file name only, lowercased, with
 /// `.exe` added when there is no extension. `None` for an empty name.
 fn clean_exe(input: &str) -> Option<String> {
@@ -156,12 +244,21 @@ fn drop_later<T: 'static>(value: T) {
 
 /// Records the next key combination pressed in a window: while `recording` is set, key-downs
 /// are kept from the window's widgets and passed (with the held modifiers) to the handler.
+/// The window losing the focus is passed as Esc (cancel). While any window records, the
+/// service releases the hotkey (see [`AppState::sync_recording`]).
 struct Recorder {
     recording: Cell<bool>,
     mods: Cell<ModifiersState>,
 }
 
 impl Recorder {
+    /// Starts or stops recording and suspends or restores the hotkey to match.
+    fn set(&self, on: bool) {
+        if self.recording.replace(on) != on {
+            with_state(AppState::sync_recording);
+        }
+    }
+
     fn install(window: &slint::Window, on_key: impl Fn(u16, Mods) + 'static) -> Rc<Recorder> {
         let rec = Rc::new(Recorder {
             recording: Cell::new(false),
@@ -196,6 +293,13 @@ impl Recorder {
                     }
                     EventResult::PreventDefault
                 }
+                WindowEvent::Focused(false) if rec.recording.get() => {
+                    // Keys pressed in other windows never come here: cancel, so the hotkey
+                    // does not stay suspended.
+                    let on_key = on_key.clone();
+                    Timer::single_shot(Duration::ZERO, move || on_key(VK_ESCAPE, Mods::default()));
+                    EventResult::Propagate
+                }
                 _ => EventResult::Propagate,
             }
         });
@@ -229,6 +333,8 @@ pub struct AppState {
     pub picker: Picker,
     /// The service reported that the current hotkey could not be registered.
     hotkey_failed: Cell<bool>,
+    /// The service was asked to release the hotkey while a window records one.
+    hotkey_suspended: Cell<bool>,
     settings: RefCell<Option<SettingsUi>>,
     first_run: RefCell<Option<FirstRunUi>>,
     about: RefCell<Option<AboutWindow>>,
@@ -259,6 +365,7 @@ impl AppState {
             service,
             picker,
             hotkey_failed: Cell::new(false),
+            hotkey_suspended: Cell::new(false),
             settings: RefCell::new(None),
             first_run: RefCell::new(None),
             about: RefCell::new(None),
@@ -310,6 +417,26 @@ impl AppState {
             }
         }
         self.refresh_settings();
+    }
+
+    /// Suspends the hotkey while the settings or first-run window records one, and restores
+    /// it once neither does. A closed window does not count, so closing never leaves the
+    /// hotkey suspended.
+    fn sync_recording(&self) {
+        let recording = self
+            .settings
+            .borrow()
+            .as_ref()
+            .is_some_and(|s| s.rec.recording.get())
+            || self
+                .first_run
+                .borrow()
+                .as_ref()
+                .is_some_and(|s| s.rec.recording.get());
+        if self.hotkey_suspended.replace(recording) != recording {
+            log!("settings: hotkey suspended={recording}");
+            self.service.send(ServiceCmd::SuspendHotkey(recording));
+        }
     }
 
     /// The service could not register the hotkey: the settings field turns red.
@@ -395,10 +522,15 @@ pub fn show_settings(state: &AppState) {
         with_settings(|state, s| settings_recorded(state, s, vk, mods));
     });
     wire_settings(&ui);
+    // A valid custom hotkey from the config is offered again after choosing a preset.
+    let custom = state
+        .config()
+        .hotkey
+        .filter(|h| choice_of(Some(*h)) == 2 && h.validate().is_ok());
     *state.settings.borrow_mut() = Some(SettingsUi {
         ui: ui.clone_strong(),
         rec,
-        custom: Cell::new(None),
+        custom: Cell::new(custom),
     });
     state.refresh_settings();
     present(ui.window());
@@ -410,37 +542,37 @@ pub fn show_settings(state: &AppState) {
 
 fn close_settings() {
     with_state(|state| {
-        if let Some(s) = state.settings.borrow_mut().take() {
+        let taken = state.settings.borrow_mut().take();
+        if let Some(s) = taken {
             let _ = s.ui.hide();
+            s.rec.set(false);
             log!("settings: closed");
             drop_later(s);
         }
+        // A closed window never keeps the hotkey suspended.
+        state.sync_recording();
     });
 }
 
 /// A key-down while recording in the settings window.
 fn settings_recorded(state: &AppState, s: &SettingsUi, vk: u16, mods: Mods) {
     let ui = &s.ui;
-    if vk == VK_ESCAPE && mods == Mods::default() {
-        s.rec.recording.set(false);
-        ui.set_recording(false);
-        ui.set_hotkey_choice(choice_of(state.config().hotkey));
-        return;
-    }
-    match recorded_hotkey(vk, mods) {
-        // A modifier alone: keep waiting for the main key.
-        Err(HotkeyError::ModifierKeyAsKey) => {}
-        Err(e) => {
-            s.rec.recording.set(false);
+    match record_step(s.rec.recording.get(), vk, mods) {
+        RecordStep::Ignore | RecordStep::Wait => {}
+        RecordStep::Cancel => {
+            s.rec.set(false);
+            ui.set_recording(false);
+            ui.set_hotkey_choice(choice_of(state.config().hotkey));
+        }
+        RecordStep::Reject(text) => {
+            s.rec.set(false);
             ui.set_recording(false);
             ui.set_hotkey_warning(SharedString::new());
-            let text = format!("{} cannot be used: {e}.", Hotkey::Combo { mods, vk });
             log!("settings: recorded hotkey rejected: {text}");
             ui.set_hotkey_error(text.into());
             ui.set_hotkey_choice(choice_of(state.config().hotkey));
         }
-        Ok(h) => {
-            s.rec.recording.set(false);
+        RecordStep::Accept(h) => {
             ui.set_recording(false);
             ui.set_hotkey_error(SharedString::new());
             let warning = if h.altgr_risk() { ALTGR_WARNING } else { "" };
@@ -452,14 +584,17 @@ fn settings_recorded(state: &AppState, s: &SettingsUi, vk: u16, mods: Mods) {
                 s.custom.set(Some(h));
             }
             log!("settings: recorded {h}");
+            // Save while the old hotkey is still suspended, then let the service arm the new
+            // one.
             state.update(|c| c.hotkey = Some(h));
+            s.rec.set(false);
             state.refresh_settings();
         }
     }
 }
 
 fn start_recording_settings(s: &SettingsUi) {
-    s.rec.recording.set(true);
+    s.rec.set(true);
     s.ui.set_recording(true);
     s.ui.set_hotkey_choice(2);
     s.ui.set_hotkey_error(SharedString::new());
@@ -472,25 +607,18 @@ fn wire_settings(ui: &SettingsWindow) {
             let ui = &s.ui;
             ui.set_hotkey_error(SharedString::new());
             ui.set_hotkey_warning(SharedString::new());
-            match i {
-                0 | 1 => {
-                    s.rec.recording.set(false);
+            match settings_choice(i, s.custom.get(), state.config().hotkey) {
+                ChoiceAction::Apply(h) => {
+                    if h.altgr_risk() {
+                        ui.set_hotkey_warning(ALTGR_WARNING.into());
+                    }
                     ui.set_recording(false);
-                    let h = Hotkey::presets()[i as usize];
                     state.update(|c| c.hotkey = Some(h));
+                    s.rec.set(false);
                     state.refresh_settings();
                 }
-                _ => match s.custom.get() {
-                    Some(h) => {
-                        if h.altgr_risk() {
-                            ui.set_hotkey_warning(ALTGR_WARNING.into());
-                        }
-                        state.update(|c| c.hotkey = Some(h));
-                        state.refresh_settings();
-                    }
-                    None if choice_of(state.config().hotkey) == 2 => {}
-                    None => start_recording_settings(s),
-                },
+                ChoiceAction::Keep => {}
+                ChoiceAction::Record => start_recording_settings(s),
             }
         });
     });
@@ -636,45 +764,39 @@ pub fn show_first_run(state: &AppState) {
     let rec = Recorder::install(ui.window(), |vk, mods| {
         with_first_run(|_, s| first_run_recorded(s, vk, mods));
     });
+    // Space or a click selects an option (the arrow keys only move the focus). Custom
+    // without a valid recording starts recording.
     ui.on_chosen(|i| {
         with_first_run(|_, s| {
             s.ui.set_choice(i);
             s.ui.set_error_text(SharedString::new());
             s.ui.set_warning_text(SharedString::new());
-            if i == 2 {
-                match s.custom.get() {
-                    Some(h) => {
-                        if h.altgr_risk() {
-                            s.ui.set_warning_text(ALTGR_WARNING.into());
-                        }
-                        s.ui.set_can_accept(true);
+            match first_run_pick(i, s.custom.get()) {
+                Some(h) => {
+                    if h.altgr_risk() {
+                        s.ui.set_warning_text(ALTGR_WARNING.into());
                     }
-                    None => start_recording_first_run(s),
+                    s.rec.set(false);
+                    s.ui.set_recording(false);
+                    s.ui.set_can_accept(true);
                 }
-            } else {
-                s.rec.recording.set(false);
-                s.ui.set_recording(false);
-                s.ui.set_can_accept(true);
+                None => start_recording_first_run(s),
             }
         });
     });
     ui.on_record(|| with_first_run(|_, s| start_recording_first_run(s)));
     ui.on_confirm(|| {
         let mut chosen = None;
-        with_first_run(|_, s| {
-            chosen = match s.ui.get_choice() {
-                0 => Some(Hotkey::presets()[0]),
-                1 => Some(Hotkey::presets()[1]),
-                _ => s.custom.get(),
-            };
-        });
+        with_first_run(|_, s| chosen = first_run_pick(s.ui.get_choice(), s.custom.get()));
         if let Some(h) = chosen {
             finish_first_run(h, "ok");
         }
     });
     ui.window().on_close_requested(|| {
-        // Closing without choosing takes the preselected option.
-        finish_first_run(Hotkey::WinPeriod, "closed");
+        // The X takes the selected option, or Win+. while Custom has no valid recording.
+        let mut chosen = Hotkey::WinPeriod;
+        with_first_run(|_, s| chosen = first_run_close_pick(s.ui.get_choice(), s.custom.get()));
+        finish_first_run(chosen, "closed");
         slint::CloseRequestResponse::HideWindow
     });
     *state.first_run.borrow_mut() = Some(FirstRunUi {
@@ -688,7 +810,7 @@ pub fn show_first_run(state: &AppState) {
 }
 
 fn start_recording_first_run(s: &FirstRunUi) {
-    s.rec.recording.set(true);
+    s.rec.set(true);
     s.ui.set_recording(true);
     s.ui.set_choice(2);
     s.ui.set_can_accept(false);
@@ -699,28 +821,26 @@ fn start_recording_first_run(s: &FirstRunUi) {
 fn first_run_recorded(s: &FirstRunUi, vk: u16, mods: Mods) {
     let ui = &s.ui;
     let stop = || {
-        s.rec.recording.set(false);
+        s.rec.set(false);
         ui.set_recording(false);
     };
-    if vk == VK_ESCAPE && mods == Mods::default() {
-        stop();
-        if s.custom.get().is_none() {
-            ui.set_choice(0);
-        }
-        ui.set_can_accept(true);
-        return;
-    }
-    match recorded_hotkey(vk, mods) {
-        Err(HotkeyError::ModifierKeyAsKey) => {}
-        Err(e) => {
+    match record_step(s.rec.recording.get(), vk, mods) {
+        RecordStep::Ignore | RecordStep::Wait => {}
+        RecordStep::Cancel => {
             stop();
-            let text = format!("{} cannot be used: {e}.", Hotkey::Combo { mods, vk });
+            if s.custom.get().is_none() {
+                ui.set_choice(0);
+            }
+            ui.set_can_accept(true);
+        }
+        RecordStep::Reject(text) => {
+            stop();
             log!("first-run: recorded hotkey rejected: {text}");
             ui.set_error_text(text.into());
             ui.set_warning_text(SharedString::new());
             ui.set_can_accept(s.custom.get().is_some());
         }
-        Ok(h) => {
+        RecordStep::Accept(h) => {
             stop();
             log!("first-run: recorded {h}");
             ui.set_error_text(SharedString::new());
@@ -740,13 +860,17 @@ fn first_run_recorded(s: &FirstRunUi, vk: u16, mods: Mods) {
 /// Applies the first-run choice and closes the dialog (once).
 fn finish_first_run(hotkey: Hotkey, how: &str) {
     with_state(|state| {
-        let Some(s) = state.first_run.borrow_mut().take() else {
+        let taken = state.first_run.borrow_mut().take();
+        let Some(s) = taken else {
             return;
         };
         let _ = s.ui.hide();
         log!("first-run: applied {hotkey} ({how})");
         drop_later(s);
+        // Save while a recording still suspends the hotkey, then restore it: the dialog is
+        // gone, so it no longer counts as recording.
         state.update(|c| c.hotkey = Some(hotkey));
+        state.sync_recording();
     });
 }
 
@@ -1048,6 +1172,152 @@ mod tests {
         for text in ABOUT_LINES.iter().chain([&ALTGR_WARNING]) {
             assert!(!text.contains(['\u{2014}', '\u{2015}']), "{text}");
         }
+    }
+
+    #[test]
+    fn record_step_takes_only_the_first_key() {
+        let ctrl_alt = mods(true, true, false, false);
+        // After the recording ended, queued key-downs (Up, Tab, Esc) are ignored.
+        assert_eq!(
+            record_step(false, 0x26, Mods::default()),
+            RecordStep::Ignore
+        );
+        assert_eq!(record_step(false, 0x4B, ctrl_alt), RecordStep::Ignore);
+        assert_eq!(
+            record_step(false, VK_ESCAPE, Mods::default()),
+            RecordStep::Ignore
+        );
+        assert_eq!(
+            record_step(true, VK_ESCAPE, Mods::default()),
+            RecordStep::Cancel
+        );
+        // Esc with a modifier is a combination, not a cancel.
+        assert!(matches!(
+            record_step(true, VK_ESCAPE, mods(true, false, false, false)),
+            RecordStep::Accept(_)
+        ));
+        assert_eq!(
+            record_step(true, 0x11, mods(true, false, false, false)),
+            RecordStep::Wait
+        );
+        assert_eq!(
+            record_step(true, 0x41, mods(false, false, true, false)),
+            RecordStep::Reject(format!(
+                "Shift+A cannot be used: {}.",
+                HotkeyError::ShiftOnly
+            ))
+        );
+        assert_eq!(
+            record_step(true, 0x4B, ctrl_alt),
+            RecordStep::Accept("Ctrl+Alt+K".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn settings_choice_actions() {
+        let p = Hotkey::presets();
+        let k: Hotkey = "Ctrl+Alt+K".parse().unwrap();
+        assert_eq!(settings_choice(0, None, Some(k)), ChoiceAction::Apply(p[0]));
+        assert_eq!(
+            settings_choice(1, Some(k), Some(p[0])),
+            ChoiceAction::Apply(p[1])
+        );
+        assert_eq!(
+            settings_choice(2, Some(k), Some(p[0])),
+            ChoiceAction::Apply(k)
+        );
+        assert_eq!(settings_choice(2, None, Some(p[0])), ChoiceAction::Record);
+        assert_eq!(settings_choice(2, None, Some(k)), ChoiceAction::Keep);
+    }
+
+    #[test]
+    fn first_run_picks() {
+        let p = Hotkey::presets();
+        let k: Hotkey = "Ctrl+Alt+K".parse().unwrap();
+        assert_eq!(first_run_pick(0, Some(k)), Some(p[0]));
+        assert_eq!(first_run_pick(1, None), Some(p[1]));
+        assert_eq!(first_run_pick(2, Some(k)), Some(k));
+        assert_eq!(first_run_pick(2, None), None);
+        // The X applies the selected option; Custom without a recording falls back to Win+.
+        assert_eq!(first_run_close_pick(1, None), p[1]);
+        assert_eq!(first_run_close_pick(2, Some(k)), k);
+        assert_eq!(first_run_close_pick(2, None), Hotkey::WinPeriod);
+    }
+
+    /// Headless check of the hotkey radios: Up and Down only move the focus, Space selects
+    /// the focused option.
+    #[test]
+    fn hotkey_radio_arrows_only_move_focus() {
+        use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+        use slint::platform::{Key, Platform, WindowAdapter, WindowEvent as SlintEvent};
+
+        struct Headless;
+        impl Platform for Headless {
+            fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
+                Ok(MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer))
+            }
+        }
+        // The platform is per thread; another test on this thread may have set it.
+        let _ = slint::platform::set_platform(Box::new(Headless));
+
+        let press = |w: &slint::Window, text: SharedString| {
+            w.dispatch_event(SlintEvent::KeyPressed { text: text.clone() });
+            w.dispatch_event(SlintEvent::KeyReleased { text });
+        };
+        let chosen: Rc<RefCell<Vec<i32>>> = Rc::default();
+
+        let ui = SettingsWindow::new().unwrap();
+        let log = chosen.clone();
+        ui.on_hotkey_chosen(move |i| log.borrow_mut().push(i));
+        ui.show().unwrap();
+        ui.invoke_focus_hotkey();
+        // From Win+.: Up wraps to Custom, Down wraps to Win+., then Ctrl+Shift+Space,
+        // Custom, and Up goes back to Ctrl+Shift+Space.
+        for key in [
+            Key::UpArrow,
+            Key::DownArrow,
+            Key::DownArrow,
+            Key::DownArrow,
+            Key::UpArrow,
+        ] {
+            press(ui.window(), key.into());
+        }
+        assert!(
+            chosen.borrow().is_empty(),
+            "arrows selected {:?}",
+            chosen.borrow()
+        );
+        assert_eq!(ui.get_hotkey_choice(), 0);
+        // The focus is on Ctrl+Shift+Space: Space selects it.
+        press(ui.window(), " ".into());
+        assert_eq!(*chosen.borrow(), vec![1]);
+        ui.hide().unwrap();
+        drop(ui);
+
+        chosen.borrow_mut().clear();
+        let ui = FirstRunWindow::new().unwrap();
+        let log = chosen.clone();
+        ui.on_chosen(move |i| log.borrow_mut().push(i));
+        let confirmed = Rc::new(Cell::new(0));
+        let c = confirmed.clone();
+        ui.on_confirm(move || c.set(c.get() + 1));
+        ui.show().unwrap();
+        ui.invoke_focus_choice();
+        press(ui.window(), Key::DownArrow.into());
+        press(ui.window(), Key::DownArrow.into());
+        assert!(
+            chosen.borrow().is_empty(),
+            "arrows selected {:?}",
+            chosen.borrow()
+        );
+        assert_eq!(ui.get_choice(), 0);
+        // Enter confirms the selected option (Win+.), not the focused one.
+        press(ui.window(), Key::Return.into());
+        assert_eq!(confirmed.get(), 1);
+        assert!(chosen.borrow().is_empty());
+        press(ui.window(), " ".into());
+        assert_eq!(*chosen.borrow(), vec![2]);
+        ui.hide().unwrap();
     }
 
     #[test]
