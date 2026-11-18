@@ -118,3 +118,8 @@ logs `insert: foreground first=.. attached=.. second=.. ok=..`. Paste mode is
       after restarting the app.
 - [ ] After a Shift+Enter queue (Shift still held at the final pick), no modifier stays stuck
       and the typed text is unchanged.
+
+Known issues:
+
+- Paste mode: images on the clipboard may be restored slightly wrong (pixels shifted).
+  Might get fixed in the future.

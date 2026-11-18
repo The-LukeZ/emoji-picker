@@ -471,6 +471,9 @@ fn read_format(format: u32, budget: usize) -> Option<Vec<u8>> {
 /// Every savable format on the clipboard, in clipboard order. The clipboard must be open.
 /// `Err` (with the reason) when part of the content could not be saved: then a paste would
 /// lose it, so the caller types instead.
+///
+/// Known issue: paste mode: images on the clipboard may be restored slightly wrong (pixels
+/// shifted). Might get fixed in the future.
 fn read_snapshot() -> Result<Vec<ClipItem>, &'static str> {
     let mut formats = Vec::new();
     let mut format = 0;
