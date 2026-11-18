@@ -128,13 +128,9 @@ fn on_ui_event(event: UiEvent) {
             });
         }
         UiEvent::HotkeySwitched(hotkey) => {
-            log!("ui: hotkey switched to {hotkey}");
-            // The picker's config is the newest copy (it saves tone and size): change only
-            // the hotkey there and save, so nothing else is reverted.
-            with_state(|s| {
-                s.picker.save_hotkey(hotkey);
-                s.refresh_settings();
-            });
+            log!("ui: hotkey switched to {hotkey} for this session");
+            // Session only: the saved config keeps Win+. so the next start tries it again.
+            with_state(|s| s.on_hotkey_fallback(hotkey));
         }
         UiEvent::OpenSettings => {
             log!("ui: OpenSettings (private {private_kb} KB)");

@@ -18,7 +18,6 @@ use std::time::{Duration, Instant};
 
 use emoji_core::config::Config;
 use emoji_core::geometry::{atlas_size_for, place_picker, Point, Rect};
-use emoji_core::hotkey::Hotkey;
 use emoji_core::picker_state::{Nav, Outcome, PickerState};
 use emoji_core::recents::Recents;
 use emoji_core::search::SearchIndex;
@@ -432,11 +431,6 @@ impl Picker {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => log!("picker: deleting {} failed: {e}", path.display()),
         }
-    }
-
-    /// Changes only the hotkey in the current config and saves it (Win+. hook fallback).
-    pub fn save_hotkey(&self, hotkey: Hotkey) {
-        self.inner.update_config(|c| c.hotkey = Some(hotkey));
     }
 
     /// The config as last changed by the picker (size and tone are saved from here).

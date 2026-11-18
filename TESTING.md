@@ -93,8 +93,11 @@ scripts must send their keys with `dwExtraInfo = 0`. The log shows
 - [ ] Win+L, unlock, then type `.` in Notepad: a period is typed and no picker opens.
 - [ ] Win+L, unlock, then Win+. still opens the picker (the matcher was reset, not stuck).
 - [ ] Making `SetWindowsHookExW` fail (or a debugger forcing `is_lost`) shows the balloon
-      "Win+. could not be captured, switching to Ctrl+Shift+Space", and `config.toml` then has
-      `hotkey = "Ctrl+Shift+Space"` with tone and size unchanged.
+      "Win+. could not be captured, using Ctrl+Shift+Space until restart", Ctrl+Shift+Space
+      opens the picker, and `config.toml` still has `hotkey = "Win+."` (unchanged file).
+      Settings shows the hotkey field red with the same text. Changing tone, size or the
+      blocklist in settings keeps Ctrl+Shift+Space working (no SetConfig race). After a
+      restart without the forced failure, Win+. works again.
 
 ## Inserting the emoji (Task 14)
 

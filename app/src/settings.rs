@@ -225,6 +225,19 @@ fn failed_text(hotkey: Option<Hotkey>) -> String {
     }
 }
 
+/// Red field text while the session fallback stands in for Win+.
+fn fallback_text(fallback: Hotkey, fallback_failed: bool) -> String {
+    if fallback_failed {
+        format!(
+            "Win+. could not be captured and {fallback} is taken by another app. Choose another hotkey."
+        )
+    } else {
+        format!(
+            "Win+. could not be captured, using {fallback} until restart. The next start tries Win+. again."
+        )
+    }
+}
+
 fn model(items: &[String]) -> ModelRc<SharedString> {
     ModelRc::new(VecModel::from(
         items
@@ -340,6 +353,9 @@ pub struct AppState {
     pub updater: UpdaterHandle,
     /// The service reported that the current hotkey could not be registered.
     hotkey_failed: Cell<bool>,
+    /// Win+. could not be captured and the service uses this hotkey until restart. Never
+    /// saved: the config keeps Win+.
+    hotkey_fallback: Cell<Option<Hotkey>>,
     /// The service was asked to release the hotkey while a window records one.
     hotkey_suspended: Cell<bool>,
     settings: RefCell<Option<SettingsUi>>,
@@ -373,6 +389,7 @@ impl AppState {
             picker,
             updater,
             hotkey_failed: Cell::new(false),
+            hotkey_fallback: Cell::new(None),
             hotkey_suspended: Cell::new(false),
             settings: RefCell::new(None),
             first_run: RefCell::new(None),
@@ -411,6 +428,8 @@ impl AppState {
         {
             if old.hotkey != new.hotkey {
                 self.hotkey_failed.set(false);
+                // The service drops its session fallback on a hotkey change too.
+                self.hotkey_fallback.set(None);
             }
             self.service.send(ServiceCmd::SetConfig(new.clone()));
         }
@@ -453,6 +472,13 @@ impl AppState {
         self.refresh_settings();
     }
 
+    /// Win+. could not be captured: the service uses `fallback` until restart. The settings
+    /// field turns red; nothing is saved.
+    pub fn on_hotkey_fallback(&self, fallback: Hotkey) {
+        self.hotkey_fallback.set(Some(fallback));
+        self.refresh_settings();
+    }
+
     /// Updates an open settings window from the current config.
     pub fn refresh_settings(&self) {
         let settings = self.settings.borrow();
@@ -470,11 +496,19 @@ impl AppState {
         };
         ui.set_custom_text(custom.map(|h| h.to_string()).unwrap_or_default().into());
         let invalid = cfg.hotkey.is_some_and(|h| h.validate().is_err());
-        let failed = self.hotkey_failed.get() || invalid;
+        let fallback = self
+            .hotkey_fallback
+            .get()
+            .filter(|_| cfg.hotkey == Some(Hotkey::WinPeriod));
+        let failed = self.hotkey_failed.get() || invalid || fallback.is_some();
+        let text = match fallback {
+            Some(f) => fallback_text(f, self.hotkey_failed.get()),
+            None => failed_text(cfg.hotkey),
+        };
         ui.set_hotkey_failed(failed);
-        ui.set_hotkey_failed_text(failed_text(cfg.hotkey).into());
+        ui.set_hotkey_failed_text(text.as_str().into());
         if failed {
-            log!("settings: hotkey field red: {}", failed_text(cfg.hotkey));
+            log!("settings: hotkey field red: {text}");
         }
         ui.set_blocklist(model(&cfg.blocklist));
         ui.set_disable_in_fullscreen(cfg.disable_in_fullscreen);
@@ -1177,6 +1211,14 @@ mod tests {
         let bad: Hotkey = "A".parse().unwrap();
         assert!(failed_text(Some(bad)).contains("cannot be used"));
         assert!(failed_text(Some(Hotkey::presets()[1])).contains("could not be registered"));
+    }
+
+    #[test]
+    fn fallback_text_names_session_hotkey() {
+        let f = Hotkey::presets()[1];
+        assert!(fallback_text(f, false).contains("until restart"));
+        assert!(fallback_text(f, false).contains(&f.to_string()));
+        assert!(fallback_text(f, true).contains("taken by another app"));
     }
 
     #[test]

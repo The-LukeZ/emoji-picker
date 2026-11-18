@@ -79,7 +79,8 @@ pub enum UiEvent {
         /// foreground rights and the picker retries `SetForegroundWindow`.
         via_hook: bool,
     },
-    /// Win+. could not be captured; the service switched to this hotkey. The UI saves it.
+    /// Win+. could not be captured; the service uses this hotkey for the rest of the session.
+    /// The saved config keeps Win+., so the next start tries Win+. again.
     HotkeySwitched(Hotkey),
     OpenSettings,
     OpenAbout,
@@ -174,8 +175,10 @@ struct Service {
     fail_notified: Cell<bool>,
     /// The current hook install is the retry after a failure: a second failure falls back.
     retrying: Cell<bool>,
-    /// Set while switching from Win+. to the fallback preset, for the combined balloon text.
-    hook_fallback: Cell<bool>,
+    /// Session-only stand-in for Win+. after the hook failed twice. Never saved: `cfg` keeps
+    /// Win+., and a SetConfig that still says Win+. keeps using this. Cleared when the
+    /// configured hotkey changes.
+    session_fallback: Cell<Option<Hotkey>>,
     /// Last foreground window of another app, the target for "Open picker" from the tray.
     last_target: Cell<isize>,
     /// Current foreground window and its last probe, so resize events need no exe lookup.
@@ -183,6 +186,14 @@ struct Service {
     fg: RefCell<Foreground>,
     /// `EVENT_OBJECT_LOCATIONCHANGE` hook limited to the foreground window's process.
     location_hook: Cell<Option<HWINEVENTHOOK>>,
+}
+
+/// The hotkey to arm: the session fallback replaces Win+. only.
+fn effective_hotkey(configured: Option<Hotkey>, fallback: Option<Hotkey>) -> Option<Hotkey> {
+    match (configured, fallback) {
+        (Some(Hotkey::WinPeriod), Some(f)) => Some(f),
+        (h, _) => h,
+    }
 }
 
 /// Out-of-context WinEvent hook for one event, optionally limited to one process.
@@ -347,7 +358,7 @@ fn run(
         ll_hook,
         fail_notified: Cell::new(false),
         retrying: Cell::new(false),
-        hook_fallback: Cell::new(false),
+        session_fallback: Cell::new(None),
         last_target: Cell::new(0),
         fg_hwnd: Cell::new(0),
         fg: RefCell::new(Foreground {
@@ -435,9 +446,20 @@ impl Service {
     }
 
     fn set_config(&self, cfg: Arc<Config>) {
+        // A config built before the fallback (still Win+.) must not undo it; a new hotkey does.
+        if self.cfg.borrow().hotkey != cfg.hotkey {
+            self.session_fallback.set(None);
+        }
+        *self.cfg.borrow_mut() = cfg;
+        self.apply_hotkey();
+    }
+
+    /// Re-arms the hotkey from `cfg`, with the session fallback standing in for Win+.
+    fn apply_hotkey(&self) {
         self.disarm();
         self.fail_notified.set(false);
-        let mode = match cfg.hotkey {
+        let hotkey = effective_hotkey(self.cfg.borrow().hotkey, self.session_fallback.get());
+        let mode = match hotkey {
             Some(h @ Hotkey::Combo { mods, vk }) => match h.validate() {
                 Ok(()) => Mode::Combo(to_mods(mods), u32::from(vk)),
                 Err(e) => {
@@ -451,7 +473,6 @@ impl Service {
             None => Mode::Off,
         };
         self.mode.set(mode);
-        *self.cfg.borrow_mut() = cfg;
         self.refresh();
     }
 
@@ -531,7 +552,7 @@ impl Service {
                     }
                     Err(e) => {
                         crate::log!("service: RegisterHotKey failed: {e}");
-                        if self.hook_fallback.get() {
+                        if self.session_fallback.get().is_some() {
                             self.fail(&format!(
                                 "Win+. could not be captured and {} is taken by another app",
                                 Hotkey::presets()[1]
@@ -556,7 +577,7 @@ impl Service {
             None => crate::log!("service: hook install unconfirmed, keeping Win+."),
             Some(false) => {
                 if self.retrying.get() {
-                    // Switch presets outside this call chain (set_config runs it again).
+                    // Switch presets outside this call chain (apply_hotkey runs it again).
                     // SAFETY: plain post to our own window.
                     let _ = unsafe {
                         PostMessageW(Some(self.msg_hwnd), WM_HOOK_FAILED, WPARAM(0), LPARAM(0))
@@ -629,26 +650,24 @@ impl Service {
         }
     }
 
-    /// Installing the hook failed: tell the user and fall back to Ctrl+Shift+Space.
+    /// Installing the hook failed: tell the user and use Ctrl+Shift+Space for this session.
+    /// The config is not changed, so the next start tries Win+. again.
     fn hook_failed(&self) {
         if self.mode.get() != Mode::WinPeriod || self.armed.get() || !self.ll_hook.is_lost() {
             return;
         }
         let fallback = Hotkey::presets()[1];
-        crate::log!("service: Win+. hook failed twice, switching to {fallback}");
-        let mut cfg = (**self.cfg.borrow()).clone();
-        cfg.hotkey = Some(fallback);
-        self.hook_fallback.set(true);
-        self.set_config(Arc::new(cfg));
-        self.hook_fallback.set(false);
+        crate::log!("service: Win+. hook failed twice, using {fallback} until restart");
+        self.session_fallback.set(Some(fallback));
+        self.apply_hotkey();
         // If registering the fallback failed, `fail` already showed the combined text.
         if !self.fail_notified.get() {
             self.tray.balloon(
                 "Emoji picker",
-                &format!("Win+. could not be captured, switching to {fallback}"),
+                &format!("Win+. could not be captured, using {fallback} until restart"),
             );
         }
-        // The UI thread owns the config file (the picker saves tone and size there too).
+        // The UI only shows this in settings; it does not save it.
         self.emit(UiEvent::HotkeySwitched(fallback));
     }
 
@@ -786,4 +805,25 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         _ => return unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     }
     LRESULT(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_replaces_only_win_period() {
+        let fallback = Hotkey::presets()[1];
+        let other: Hotkey = "Ctrl+Alt+K".parse().unwrap();
+        assert_eq!(
+            effective_hotkey(Some(Hotkey::WinPeriod), Some(fallback)),
+            Some(fallback)
+        );
+        assert_eq!(
+            effective_hotkey(Some(Hotkey::WinPeriod), None),
+            Some(Hotkey::WinPeriod)
+        );
+        assert_eq!(effective_hotkey(Some(other), Some(fallback)), Some(other));
+        assert_eq!(effective_hotkey(None, Some(fallback)), None);
+    }
 }
