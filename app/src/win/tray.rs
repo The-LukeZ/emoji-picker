@@ -13,6 +13,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 /// Callback message the shell sends to the owner window for icon clicks.
+/// Shares one wndproc with the service window, whose own ids (`service.rs`) must differ.
 pub const WM_TRAY: u32 = WM_APP + 2;
 
 /// Menu command ids, delivered to the owner window as `WM_COMMAND`.

@@ -49,3 +49,27 @@ by itself (no synthetic keys), logs the same numbers and a summary, then quits.
 
 Note: pressing the hotkey while the picker is open closes it (toggle, owner decision
 2026-11-18).
+
+## Win+. hook (Task 13)
+
+Setup: a debug build (logs go to stderr) with `hotkey = "Win+."` in the config. The log shows
+`ll-hook: installed` / `ll-hook: uninstalled` whenever the hook comes and goes, and
+`service: session change N` on lock and unlock. Desktop tests must never press a bare
+modifier (Alt, Win, Ctrl, Shift) to win the foreground unless it is the only reliable way;
+then the script documents why, releases it, and checks `GetAsyncKeyState` afterwards. Every
+modifier pressed must be released, and the test ends by checking that Win, Ctrl, Shift and
+Alt are all up.
+
+- [ ] Win+. opens our picker and the Windows emoji panel does not open.
+- [ ] Releasing Win after Win+. does not open the Start menu.
+- [ ] Win alone still opens the Start menu.
+- [ ] Win+E still opens Explorer.
+- [ ] In a blocklisted game Win+. reaches the game (the Windows panel opens there), and the
+      log (or Process Explorer) shows the hook uninstalled while the game has focus.
+- [ ] The picker gets keyboard focus every time across 20 Win+. opens (typing goes to the
+      search field; the log has no `SetForegroundWindow refused`).
+- [ ] Win+L, unlock, then type `.` in Notepad: a period is typed and no picker opens.
+- [ ] Win+L, unlock, then Win+. still opens the picker (the matcher was reset, not stuck).
+- [ ] Making `SetWindowsHookExW` fail (or a debugger forcing `is_lost`) shows the balloon
+      "Win+. could not be captured, switching to Ctrl+Shift+Space", and `config.toml` then has
+      `hotkey = "Ctrl+Shift+Space"` with tone and size unchanged.

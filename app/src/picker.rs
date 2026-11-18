@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use emoji_core::config::Config;
 use emoji_core::geometry::{atlas_size_for, place_picker, Point, Rect};
+use emoji_core::hotkey::Hotkey;
 use emoji_core::picker_state::{Nav, Outcome, PickerState};
 use emoji_core::recents::Recents;
 use emoji_core::search::SearchIndex;
@@ -68,6 +69,8 @@ pub struct OpenRequest {
     pub caret: Option<Rect>,
     pub cursor: Point,
     pub at: Instant,
+    /// Opened by the Win+. hook: retry a refused `SetForegroundWindow` once.
+    pub via_hook: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -368,6 +371,11 @@ impl Picker {
         }
     }
 
+    /// Changes only the hotkey in the current config and saves it (Win+. hook fallback).
+    pub fn save_hotkey(&self, hotkey: Hotkey) {
+        self.inner.update_config(|c| c.hotkey = Some(hotkey));
+    }
+
     /// The config as last changed by the picker (size and tone are saved from here).
     #[allow(dead_code)] // read by the settings window (Task 15)
     pub fn config(&self) -> Arc<Config> {
@@ -533,13 +541,24 @@ impl Inner {
         let hwnd = self.hwnd.get();
         if hwnd != 0 {
             sys::set_tool_window(hwnd);
-            if !sys::activate(hwnd) {
+            if !sys::activate(hwnd) && !(ev.via_hook && self.retry_activate(hwnd)) {
                 log!("picker: SetForegroundWindow refused: open without focus, closes on Esc after a click into it, a pick or the hotkey");
             }
         }
         self.ui.invoke_focus_search();
         self.ui.invoke_scroll_to_top();
         self.ui.window().request_redraw();
+    }
+
+    /// The Win+. hook ate the key, so the target app, not this process, got the last input
+    /// and Windows may refuse the foreground. The service already called
+    /// `AllowSetForegroundWindow(ASFW_ANY)`; inject a tap of the unassigned mask key (input
+    /// from this process, no effect in any app) and try once more.
+    fn retry_activate(&self, hwnd: isize) -> bool {
+        crate::win::ll_hook::tap_mask_key();
+        let ok = sys::activate(hwnd);
+        log!("picker: SetForegroundWindow retry after mask key: {ok}");
+        ok
     }
 
     fn native_hwnd(&self) -> isize {
@@ -975,6 +994,7 @@ impl Picker {
                     caret: None,
                     cursor: crate::win::foreground::cursor(),
                     at: Instant::now(),
+                    via_hook: false,
                 }),
                 1 => {
                     if let Some(ms) = inner.last_open_ms.take() {
@@ -1119,6 +1139,7 @@ mod tests {
             caret: None,
             cursor: Point { x: 100, y: 100 },
             at: Instant::now(),
+            via_hook: false,
         });
         inner.ui.set_dark(false);
         render("picker-medium-light.png");

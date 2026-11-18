@@ -91,6 +91,7 @@ fn on_ui_event(event: UiEvent) {
             caret,
             cursor,
             at,
+            via_hook,
         } => {
             log!(
                 "ui: OpenPicker target={target:#x} caret={caret:?} cursor={cursor:?} after {:?} (private {private_kb} KB)",
@@ -103,7 +104,18 @@ fn on_ui_event(event: UiEvent) {
                         caret,
                         cursor,
                         at,
+                        via_hook,
                     });
+                }
+            });
+        }
+        UiEvent::HotkeySwitched(hotkey) => {
+            log!("ui: hotkey switched to {hotkey}");
+            // The picker's config is the newest copy (it saves tone and size): change only
+            // the hotkey there and save, so nothing else is reverted.
+            PICKER.with(|p| {
+                if let Some(p) = p.get() {
+                    p.save_hotkey(hotkey);
                 }
             });
         }

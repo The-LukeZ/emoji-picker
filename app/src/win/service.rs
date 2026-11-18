@@ -12,29 +12,35 @@ use std::time::Instant;
 
 use emoji_core::config::Config;
 use emoji_core::geometry::{Point, Rect};
+use emoji_core::hook_matcher::{VK_LWIN, VK_RWIN};
 use emoji_core::hotkey::Hotkey;
 use emoji_core::policy::{exe_file_name, hotkey_allowed, Foreground};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::RemoteDesktop::{
+    WTSRegisterSessionNotification, WTSUnRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
+};
 use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
-    MOD_SHIFT, MOD_WIN,
+    GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL,
+    MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
 };
 use windows::Win32::UI::Shell::NIN_SELECT;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
-    GetMessageW, GetSystemMetrics, GetWindowThreadProcessId, LoadIconW, LoadImageW,
-    PostQuitMessage, PostThreadMessageW, RegisterClassExW, RegisterWindowMessageW,
-    TranslateMessage, CHILDID_SELF, EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND, HICON,
-    HWND_MESSAGE, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTCOLOR, MSG, OBJID_WINDOW, SM_CXSMICON,
-    SM_CYSMICON, WINEVENT_OUTOFCONTEXT, WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_HOTKEY, WNDCLASSEXW,
-    WS_EX_TOOLWINDOW, WS_POPUP,
+    AllowSetForegroundWindow, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+    GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindowThreadProcessId, KillTimer,
+    LoadIconW, LoadImageW, PostMessageW, PostQuitMessage, PostThreadMessageW, RegisterClassExW,
+    RegisterWindowMessageW, SetTimer, TranslateMessage, ASFW_ANY, CHILDID_SELF,
+    EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND, HICON, HWND_MESSAGE, IDI_APPLICATION,
+    IMAGE_ICON, LR_DEFAULTCOLOR, MSG, OBJID_WINDOW, SM_CXSMICON, SM_CYSMICON,
+    WINEVENT_OUTOFCONTEXT, WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_HOTKEY, WM_TIMER,
+    WM_WTSSESSION_CHANGE, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 use super::foreground::{caret_rect, cursor, is_window_fullscreen, probe};
+use super::ll_hook::LlHook;
 use super::tray::{Tray, CMD_ABOUT, CMD_OPEN_PICKER, CMD_PAUSE, CMD_QUIT, CMD_SETTINGS, WM_TRAY};
 
 /// Class of the message-only window; a second instance finds it with `FindWindowExW`.
@@ -45,7 +51,14 @@ const TRAY_CLASS: PCWSTR = w!("EmojiPickerTray");
 pub const WM_OPEN_SETTINGS: u32 = WM_APP + 1;
 /// Thread message that wakes the loop to drain the command channel.
 const WM_WAKE: u32 = WM_APP;
+/// Posted to the service window by the hook thread: Win+. was pressed.
+const WM_HOOK_OPEN: u32 = WM_APP + 3;
+/// Posted to the service window when installing the Win+. hook failed.
+const WM_HOOK_FAILED: u32 = WM_APP + 4;
 const HOTKEY_ID: i32 = 1;
+/// Timer that reinstalls the Win+. hook: Windows removes a slow hook without telling us.
+const REHOOK_TIMER: usize = 1;
+const REHOOK_MS: u32 = 60_000;
 const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
 
 #[derive(Debug, Clone)]
@@ -56,7 +69,12 @@ pub enum UiEvent {
         caret: Option<Rect>,
         cursor: Point,
         at: Instant,
+        /// Opened by the Win+. hook: the period was swallowed, so this process may lack
+        /// foreground rights and the picker retries `SetForegroundWindow`.
+        via_hook: bool,
     },
+    /// Win+. could not be captured; the service switched to this hotkey. The UI saves it.
+    HotkeySwitched(Hotkey),
     OpenSettings,
     OpenAbout,
     Quit,
@@ -126,10 +144,13 @@ struct Service {
     rx: Receiver<ServiceCmd>,
     on_event: Box<dyn Fn(UiEvent)>,
     cfg: RefCell<Arc<Config>>,
-    /// Modifiers and vk to register; `None` when off, Win+. (Task 13) or invalid.
-    combo: Cell<Option<(HOT_KEY_MODIFIERS, u32)>>,
+    /// What the configured hotkey needs.
+    mode: Cell<Mode>,
     paused: Cell<bool>,
-    registered: Cell<bool>,
+    /// The hotkey is live: registered (combo) or hook installed (Win+.).
+    armed: Cell<bool>,
+    /// Keyboard hook thread for Win+.; idle unless `mode` is `WinPeriod`.
+    ll_hook: LlHook,
     /// Set after a failure balloon so foreground changes do not repeat it.
     fail_notified: Cell<bool>,
     /// Last foreground window of another app, the target for "Open picker" from the tray.
@@ -162,6 +183,16 @@ fn unhook(hook: Option<HWINEVENTHOOK>) {
         // SAFETY: hook was returned by SetWinEventHook on this thread.
         let _ = unsafe { UnhookWinEvent(hook) };
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// No hotkey: setup unfinished or the combination is invalid.
+    Off,
+    /// Modifiers and vk for `RegisterHotKey`.
+    Combo(HOT_KEY_MODIFIERS, u32),
+    /// Win+. through the low-level keyboard hook.
+    WinPeriod,
 }
 
 thread_local! {
@@ -259,6 +290,24 @@ fn run(
     let taskbar_created = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
     let tray = Tray::new(tray_hwnd, load_icon(hinstance));
     let hook = win_event_hook(EVENT_SYSTEM_FOREGROUND, 0);
+    // Session lock, unlock and switch: a Win key-up can go missing there. The tray window is a
+    // normal (hidden) top-level window, so it gets these notifications.
+    // SAFETY: tray_hwnd is our window on this thread.
+    if let Err(e) = unsafe { WTSRegisterSessionNotification(tray_hwnd, NOTIFY_FOR_THIS_SESSION) } {
+        crate::log!("service: WTSRegisterSessionNotification failed: {e}");
+    }
+    let hook_target = msg_hwnd.0 as isize;
+    let ll_hook = LlHook::spawn(move || {
+        // SAFETY: plain post to our message-only window; it never blocks.
+        let _ = unsafe {
+            PostMessageW(
+                Some(HWND(hook_target as *mut _)),
+                WM_HOOK_OPEN,
+                WPARAM(0),
+                LPARAM(0),
+            )
+        };
+    });
 
     let svc = Rc::new(Service {
         msg_hwnd,
@@ -267,9 +316,10 @@ fn run(
         rx,
         on_event,
         cfg: RefCell::new(cfg.clone()),
-        combo: Cell::new(None),
+        mode: Cell::new(Mode::Off),
         paused: Cell::new(false),
-        registered: Cell::new(false),
+        armed: Cell::new(false),
+        ll_hook,
         fail_notified: Cell::new(false),
         last_target: Cell::new(0),
         fg_hwnd: Cell::new(0),
@@ -301,7 +351,9 @@ fn run(
         unsafe { DispatchMessageW(&msg) };
     }
 
-    svc.unregister();
+    svc.disarm();
+    // SAFETY: registered above on this window.
+    let _ = unsafe { WTSUnRegisterSessionNotification(tray_hwnd) };
     unhook(Some(hook));
     unhook(svc.location_hook.take());
     SERVICE.with(|s| s.borrow_mut().take());
@@ -350,21 +402,22 @@ impl Service {
     }
 
     fn set_config(&self, cfg: Arc<Config>) {
-        self.unregister();
+        self.disarm();
         self.fail_notified.set(false);
-        let combo = match cfg.hotkey {
+        let mode = match cfg.hotkey {
             Some(h @ Hotkey::Combo { mods, vk }) => match h.validate() {
-                Ok(()) => Some((to_mods(mods), u32::from(vk))),
+                Ok(()) => Mode::Combo(to_mods(mods), u32::from(vk)),
                 Err(e) => {
                     crate::log!("service: hotkey {h} rejected: {e}");
                     self.fail(&format!("Hotkey {h} cannot be used: {e}"));
-                    None
+                    Mode::Off
                 }
             },
-            // Win+. is handled by the keyboard hook (Task 13); None means setup is unfinished.
-            Some(Hotkey::WinPeriod) | None => None,
+            Some(Hotkey::WinPeriod) => Mode::WinPeriod,
+            // Setup is unfinished.
+            None => Mode::Off,
         };
-        self.combo.set(combo);
+        self.mode.set(mode);
         *self.cfg.borrow_mut() = cfg;
         self.refresh();
     }
@@ -412,12 +465,13 @@ impl Service {
         self.update_hotkey("resize");
     }
 
-    /// Registers or releases the hotkey for the cached foreground state.
+    /// Arms or disarms the hotkey for the cached foreground state.
     fn update_hotkey(&self, why: &str) {
-        let Some((mods, vk)) = self.combo.get() else {
-            self.unregister();
+        let mode = self.mode.get();
+        if mode == Mode::Off {
+            self.disarm();
             return;
-        };
+        }
         let info = self.fg.borrow().clone();
         let cfg = self.cfg.borrow().clone();
         let allowed = hotkey_allowed(&info, &cfg, self.paused.get());
@@ -427,30 +481,98 @@ impl Service {
             info.fullscreen
         );
         if !allowed {
-            self.unregister();
+            self.disarm();
             return;
         }
-        if self.registered.get() {
+        if self.armed.get() {
             return;
         }
-        // SAFETY: msg_hwnd is our window on this thread.
-        match unsafe { RegisterHotKey(Some(self.msg_hwnd), HOTKEY_ID, mods, vk) } {
-            Ok(()) => {
-                self.registered.set(true);
-                self.fail_notified.set(false);
+        match mode {
+            Mode::Off => {}
+            Mode::Combo(mods, vk) => {
+                // SAFETY: msg_hwnd is our window on this thread.
+                match unsafe { RegisterHotKey(Some(self.msg_hwnd), HOTKEY_ID, mods, vk) } {
+                    Ok(()) => {
+                        self.armed.set(true);
+                        self.fail_notified.set(false);
+                    }
+                    Err(e) => {
+                        crate::log!("service: RegisterHotKey failed: {e}");
+                        self.fail("Hotkey is taken by another app");
+                    }
+                }
             }
-            Err(e) => {
-                crate::log!("service: RegisterHotKey failed: {e}");
-                self.fail("Hotkey is taken by another app");
+            Mode::WinPeriod => {
+                self.ll_hook.install();
+                if self.ll_hook.is_lost() {
+                    // Switch presets outside this call chain (set_config runs it again).
+                    // SAFETY: plain post to our own window.
+                    let _ = unsafe {
+                        PostMessageW(Some(self.msg_hwnd), WM_HOOK_FAILED, WPARAM(0), LPARAM(0))
+                    };
+                    return;
+                }
+                self.armed.set(true);
+                // SAFETY: msg_hwnd is our window on this thread; same id replaces the timer.
+                unsafe { SetTimer(Some(self.msg_hwnd), REHOOK_TIMER, REHOOK_MS, None) };
             }
         }
     }
 
-    fn unregister(&self) {
-        if self.registered.replace(false) {
-            // SAFETY: the id was registered on msg_hwnd by this thread.
-            let _ = unsafe { UnregisterHotKey(Some(self.msg_hwnd), HOTKEY_ID) };
+    /// Releases the hotkey (unregister, or remove the hook and its reinstall timer).
+    fn disarm(&self) {
+        if !self.armed.replace(false) {
+            return;
         }
+        match self.mode.get() {
+            Mode::Off => {}
+            Mode::Combo(..) => {
+                // SAFETY: the id was registered on msg_hwnd by this thread.
+                let _ = unsafe { UnregisterHotKey(Some(self.msg_hwnd), HOTKEY_ID) };
+            }
+            Mode::WinPeriod => {
+                // SAFETY: the timer, if any, was set on msg_hwnd by this thread.
+                let _ = unsafe { KillTimer(Some(self.msg_hwnd), REHOOK_TIMER) };
+                self.ll_hook.uninstall();
+            }
+        }
+    }
+
+    /// Periodic reinstall while Win+. is live. Skipped while a Win key is down: a reinstall
+    /// resets the matcher and would lose the Start menu mask for that press.
+    fn rehook(&self) {
+        if self.mode.get() != Mode::WinPeriod || !self.armed.get() {
+            return;
+        }
+        // SAFETY: plain key state query.
+        let lwin = unsafe { GetAsyncKeyState(i32::from(VK_LWIN)) };
+        // SAFETY: plain key state query.
+        let rwin = unsafe { GetAsyncKeyState(i32::from(VK_RWIN)) };
+        if lwin < 0 || rwin < 0 {
+            return;
+        }
+        self.ll_hook.install();
+        if self.ll_hook.is_lost() {
+            self.hook_failed();
+        }
+    }
+
+    /// Installing the hook failed: tell the user and fall back to Ctrl+Shift+Space.
+    fn hook_failed(&self) {
+        if self.mode.get() != Mode::WinPeriod || !self.ll_hook.is_lost() {
+            return;
+        }
+        let fallback = Hotkey::presets()[1];
+        crate::log!("service: Win+. hook failed, switching to {fallback}");
+        self.tray.balloon(
+            "Emoji picker",
+            &format!("Win+. could not be captured, switching to {fallback}"),
+        );
+        let mut cfg = (**self.cfg.borrow()).clone();
+        cfg.hotkey = Some(fallback);
+        self.set_config(Arc::new(cfg));
+        // The UI thread owns the config file (the picker saves tone and size there too).
+        self.emit(UiEvent::HotkeySwitched(fallback));
     }
 
     fn track_target(&self, hwnd: HWND) {
@@ -465,7 +587,7 @@ impl Service {
         }
     }
 
-    fn open_picker(&self, target: isize) {
+    fn open_picker(&self, target: isize, via_hook: bool) {
         let at = Instant::now();
         let hwnd = HWND(target as *mut _);
         self.emit(UiEvent::OpenPicker {
@@ -473,12 +595,13 @@ impl Service {
             caret: caret_rect(hwnd),
             cursor: cursor(),
             at,
+            via_hook,
         });
     }
 
     fn on_command(&self, id: usize) {
         match id {
-            CMD_OPEN_PICKER => self.open_picker(self.last_target.get()),
+            CMD_OPEN_PICKER => self.open_picker(self.last_target.get(), false),
             CMD_SETTINGS => self.emit(UiEvent::OpenSettings),
             CMD_PAUSE => {
                 self.paused.set(!self.paused.get());
@@ -540,9 +663,30 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let fg = unsafe { GetForegroundWindow() };
             // Re-check: the window may have gone fullscreen without an event we acted on.
             svc.on_foreground(fg);
-            if svc.registered.get() {
-                svc.open_picker(fg.0 as isize);
+            if svc.armed.get() {
+                svc.open_picker(fg.0 as isize, false);
             }
+        }
+        WM_HOOK_OPEN => {
+            // SAFETY: no arguments.
+            let fg = unsafe { GetForegroundWindow() };
+            // Same re-check as WM_HOTKEY; a newly blocked window also loses the hook here.
+            svc.on_foreground(fg);
+            if svc.armed.get() && svc.mode.get() == Mode::WinPeriod {
+                // Lets the UI thread take the foreground if this process may (the hook ate
+                // the key, so the target app got the last input, not us).
+                // SAFETY: plain call; fails harmlessly without foreground rights.
+                let _ = unsafe { AllowSetForegroundWindow(ASFW_ANY) };
+                svc.open_picker(fg.0 as isize, true);
+            } else {
+                crate::log!("service: Win+. arrived while blocked, ignored");
+            }
+        }
+        WM_HOOK_FAILED => svc.hook_failed(),
+        WM_TIMER if wp.0 == REHOOK_TIMER => svc.rehook(),
+        WM_WTSSESSION_CHANGE => {
+            crate::log!("service: session change {}", wp.0);
+            svc.ll_hook.reset();
         }
         WM_OPEN_SETTINGS => svc.emit(UiEvent::OpenSettings),
         WM_TRAY => match (lp.0 & 0xFFFF) as u32 {
@@ -551,7 +695,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 // Thread wake messages posted during the modal menu loop are dropped.
                 svc.drain();
             }
-            NIN_SELECT | NIN_KEYSELECT => svc.open_picker(svc.last_target.get()),
+            NIN_SELECT | NIN_KEYSELECT => svc.open_picker(svc.last_target.get(), false),
             _ => {}
         },
         WM_COMMAND => svc.on_command(wp.0 & 0xFFFF),
