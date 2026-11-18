@@ -48,7 +48,11 @@ by itself (no synthetic keys), logs the same numbers and a summary, then quits.
 - [ ] Clicking outside the picker closes it.
 - [ ] A hotkey press while the picker is closing is not lost: pick an emoji with Enter and
       press the hotkey right away (within about 250 ms). The emoji is inserted, then the picker
-      opens again; the log shows `picker: open while closing, replaying after close`.
+      opens again; the log shows `picker: open while closing, replaying after close`. Then
+      pick a second emoji: it arrives in Notepad too (the replayed open targets Notepad, not
+      the picker).
+- [ ] With the settings window in front, the hotkey opens the picker for the app that was in
+      front before settings, and a pick arrives there.
 - [x] Open and close 10 times, then read private bytes from the debug log: hidden < 30 MB,
       open < 60 MB; median open < 200 ms. Numbers recorded in
       `.superpowers/sdd/2026-11-18-emoji-picker/spike-results.md`. (Verified 2026-11-18 with
@@ -101,6 +105,9 @@ scripts must send their keys with `dwExtraInfo = 0`. The log shows
       Settings shows the hotkey field red with the same text. Changing tone, size or the
       blocklist in settings keeps Ctrl+Shift+Space working (no SetConfig race). After a
       restart without the forced failure, Win+. works again.
+- [ ] During that fallback, clicking Win+. in settings logs `service: retrying Win+. on
+      request` and the red field clears. Without the forced failure Win+. works at once; with
+      it, the fallback balloon and red field come back after about a second.
 
 ## Inserting the emoji (Task 14)
 

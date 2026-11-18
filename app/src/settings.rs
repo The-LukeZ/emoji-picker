@@ -225,6 +225,12 @@ fn failed_text(hotkey: Option<Hotkey>) -> String {
     }
 }
 
+/// True when choosing `chosen` should retry Win+. instead of saving: Win+. is already the
+/// configured hotkey and a session fallback stands in for it.
+fn retries_win_period(chosen: Hotkey, current: Option<Hotkey>, fallback: Option<Hotkey>) -> bool {
+    chosen == Hotkey::WinPeriod && current == Some(Hotkey::WinPeriod) && fallback.is_some()
+}
+
 /// Red field text while the session fallback stands in for Win+.
 fn fallback_text(fallback: Hotkey, fallback_failed: bool) -> String {
     if fallback_failed {
@@ -472,6 +478,20 @@ impl AppState {
         self.refresh_settings();
     }
 
+    /// Applies a hotkey chosen in the settings window. Choosing Win+. again while the session
+    /// fallback stands in for it asks the service to retry Win+. (the config is unchanged, so
+    /// there is nothing to save).
+    pub fn choose_hotkey(&self, hotkey: Hotkey) {
+        if retries_win_period(hotkey, self.config().hotkey, self.hotkey_fallback.get()) {
+            log!("settings: Win+. chosen again, retrying the hook");
+            self.hotkey_fallback.set(None);
+            self.hotkey_failed.set(false);
+            self.service.send(ServiceCmd::RetryWinPeriod);
+            return;
+        }
+        self.update(|c| c.hotkey = Some(hotkey));
+    }
+
     /// Win+. could not be captured: the service uses `fallback` until restart. The settings
     /// field turns red; nothing is saved.
     pub fn on_hotkey_fallback(&self, fallback: Hotkey) {
@@ -628,7 +648,7 @@ fn settings_recorded(state: &AppState, s: &SettingsUi, vk: u16, mods: Mods) {
             log!("settings: recorded {h}");
             // Save while the old hotkey is still suspended, then let the service arm the new
             // one.
-            state.update(|c| c.hotkey = Some(h));
+            state.choose_hotkey(h);
             s.rec.set(false);
             state.refresh_settings();
         }
@@ -655,7 +675,7 @@ fn wire_settings(ui: &SettingsWindow) {
                         ui.set_hotkey_warning(ALTGR_WARNING.into());
                     }
                     ui.set_recording(false);
-                    state.update(|c| c.hotkey = Some(h));
+                    state.choose_hotkey(h);
                     s.rec.set(false);
                     state.refresh_settings();
                 }
@@ -1211,6 +1231,18 @@ mod tests {
         let bad: Hotkey = "A".parse().unwrap();
         assert!(failed_text(Some(bad)).contains("cannot be used"));
         assert!(failed_text(Some(Hotkey::presets()[1])).contains("could not be registered"));
+    }
+
+    #[test]
+    fn choosing_win_period_during_fallback_retries() {
+        let f = Hotkey::presets()[1];
+        let w = Hotkey::WinPeriod;
+        assert!(retries_win_period(w, Some(w), Some(f)));
+        // No fallback: nothing to retry.
+        assert!(!retries_win_period(w, Some(w), None));
+        // A real change goes through the normal save.
+        assert!(!retries_win_period(w, Some(f), Some(f)));
+        assert!(!retries_win_period(f, Some(w), Some(f)));
     }
 
     #[test]

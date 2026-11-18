@@ -37,9 +37,29 @@ pub fn hotkey_allowed(fg: &Foreground, cfg: &Config, paused: bool) -> bool {
     !(fg.fullscreen && cfg.disable_in_fullscreen)
 }
 
+/// The window the picker inserts into for a hotkey press while `foreground` is in front.
+///
+/// When one of our own windows is in front (the closing picker, settings, first run, about),
+/// the target is the last foreground window of another app, never our own window.
+pub fn open_target(foreground: isize, foreground_is_own: bool, last_target: isize) -> isize {
+    if foreground_is_own {
+        last_target
+    } else {
+        foreground
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_target_skips_own_windows() {
+        assert_eq!(open_target(0x100, false, 0x200), 0x100);
+        assert_eq!(open_target(0x100, true, 0x200), 0x200);
+        // No other app was in front yet: no target.
+        assert_eq!(open_target(0x100, true, 0), 0);
+    }
 
     #[test]
     fn blocklist_matches_file_name_case_insensitive() {

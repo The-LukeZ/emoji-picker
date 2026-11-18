@@ -706,7 +706,9 @@ impl Inner {
             self.record_picks(&picked);
         }
         let reopen = self.pending_open.borrow_mut().take();
-        if let Some(ev) = reopen {
+        if let Some(mut ev) = reopen {
+            // Open timing starts now, not at the press (the insert ran in between).
+            ev.at = Instant::now();
             self.open(ev);
         }
     }

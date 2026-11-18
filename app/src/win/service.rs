@@ -15,7 +15,7 @@ use emoji_core::config::Config;
 use emoji_core::geometry::{Point, Rect};
 use emoji_core::hook_matcher::{VK_LWIN, VK_RWIN};
 use emoji_core::hotkey::Hotkey;
-use emoji_core::policy::{exe_file_name, hotkey_allowed, Foreground};
+use emoji_core::policy::{exe_file_name, hotkey_allowed, open_target, Foreground};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -100,6 +100,9 @@ pub enum ServiceCmd {
     /// keys reach the recorder), and arms it again with `false`. Separate from the tray's
     /// pause, which it never changes.
     SuspendHotkey(bool),
+    /// The user chose Win+. again during a session fallback: drop the fallback and try the
+    /// hook again (same retry and fallback logic as at start).
+    RetryWinPeriod,
     Balloon {
         title: String,
         text: String,
@@ -438,6 +441,11 @@ impl Service {
                     self.suspended.set(s);
                     self.refresh();
                 }
+                ServiceCmd::RetryWinPeriod => {
+                    crate::log!("service: retrying Win+. on request");
+                    self.session_fallback.set(None);
+                    self.apply_hotkey();
+                }
                 ServiceCmd::Balloon { title, text } => self.tray.balloon(&title, &text),
                 ServiceCmd::UpdateReady(version) => *self.update_ready.borrow_mut() = Some(version),
                 // SAFETY: ends this thread's message loop.
@@ -673,15 +681,18 @@ impl Service {
     }
 
     fn track_target(&self, hwnd: HWND) {
-        let mut pid = 0u32;
-        // SAFETY: hwnd comes from the foreground event; a stale one gives pid 0.
-        unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
-        // SAFETY: no arguments.
-        let own = pid == unsafe { GetCurrentProcessId() };
+        let (pid, own) = window_process(hwnd);
         let shell = probe_is_taskbar(hwnd);
         if pid != 0 && !own && !shell {
             self.last_target.set(hwnd.0 as isize);
         }
+    }
+
+    /// Insert target for a hotkey press with `fg` in front: our own windows (the closing
+    /// picker, settings) give the last foreign foreground window instead.
+    fn hotkey_target(&self, fg: HWND) -> isize {
+        let (_, own) = window_process(fg);
+        open_target(fg.0 as isize, own, self.last_target.get())
     }
 
     fn open_picker(&self, target: isize, via_hook: bool) {
@@ -710,6 +721,16 @@ impl Service {
             _ => {}
         }
     }
+}
+
+/// Process id of `hwnd` (0 for a stale window) and whether it is this process.
+fn window_process(hwnd: HWND) -> (u32, bool) {
+    let mut pid = 0u32;
+    // SAFETY: a stale hwnd gives pid 0.
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    // SAFETY: no arguments.
+    let own = pid != 0 && pid == unsafe { GetCurrentProcessId() };
+    (pid, own)
 }
 
 /// The taskbar takes the foreground when the tray icon is clicked; it is not a target.
@@ -782,7 +803,7 @@ fn handle_message(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
             // Re-check: the window may have gone fullscreen without an event we acted on.
             svc.on_foreground(fg);
             if svc.armed.get() {
-                svc.open_picker(fg.0 as isize, false);
+                svc.open_picker(svc.hotkey_target(fg), false);
             }
         }
         WM_HOOK_OPEN => {
@@ -795,7 +816,7 @@ fn handle_message(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
                 // the key, so the target app got the last input, not us).
                 // SAFETY: plain call; fails harmlessly without foreground rights.
                 let _ = unsafe { AllowSetForegroundWindow(ASFW_ANY) };
-                svc.open_picker(fg.0 as isize, true);
+                svc.open_picker(svc.hotkey_target(fg), true);
             } else {
                 crate::log!("service: Win+. arrived while blocked, ignored");
             }
