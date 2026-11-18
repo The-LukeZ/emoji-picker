@@ -29,7 +29,12 @@ by itself (no synthetic keys), logs the same numbers and a summary, then quits.
 
 - [ ] Hotkey opens the picker next to the Notepad caret.
 - [ ] With the caret at the bottom of the screen the picker opens above it.
-- [ ] Typing `fire` filters on each key.
+- [x] Typing `fire` filters on each key. (Verified 2026-11-18: real hotkey from Notepad, keys
+      sent with `SendInput`; the log shows a search for `f`, `fi`, `fir`, `fire`, 11 hits.)
+- [x] The first hotkey open takes the foreground (typing goes to the search field), Esc closes
+      and gives the foreground back to Notepad, and a second hotkey press while open closes the
+      picker. (Verified 2026-11-18 with `SendInput`, foreground checked with
+      `GetForegroundWindow`.)
 - [ ] Arrows move the selection, Tab and Shift+Tab switch categories, Esc closes.
 - [ ] Ctrl+wheel changes the size through all 4 steps.
 - [ ] Dark mode follows Windows (Settings > Personalization > Colors).
