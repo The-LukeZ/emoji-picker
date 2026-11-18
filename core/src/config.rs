@@ -2,7 +2,7 @@
 //! defaults and a broken file is backed up and replaced by defaults.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -97,13 +97,26 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
 }
 
 /// Write `contents` to `path` via a `.tmp` sibling and a rename, creating the parent dir.
+///
+/// The data is flushed to disk before the rename, so a power loss cannot leave an empty
+/// `path`. On any failure the `.tmp` file is removed and `path` is left as it was.
 pub(crate) fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let tmp = sibling(path, ".tmp");
-    fs::write(&tmp, contents)?;
-    fs::rename(&tmp, path)
+    let res = write_synced(&tmp, contents).and_then(|()| fs::rename(&tmp, path));
+    if res.is_err() {
+        // Best effort: the original error is the one worth reporting.
+        let _ = fs::remove_file(&tmp);
+    }
+    res
+}
+
+fn write_synced(path: &Path, contents: &str) -> io::Result<()> {
+    let mut file = fs::File::create(path)?;
+    file.write_all(contents.as_bytes())?;
+    file.sync_all()
 }
 
 impl Config {
@@ -195,6 +208,28 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_atomic_replaces_and_leaves_no_tmp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        write_atomic(&path, "a = 1").unwrap();
+        write_atomic(&path, "a = 2").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "a = 2");
+        assert!(!sibling(&path, ".tmp").exists());
+    }
+
+    #[test]
+    fn write_atomic_removes_tmp_when_rename_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        // A non-empty directory at the target path makes the rename fail.
+        let path = dir.path().join("config.toml");
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("keep"), "x").unwrap();
+        assert!(write_atomic(&path, "a = 1").is_err());
+        assert!(!sibling(&path, ".tmp").exists());
+        assert!(path.join("keep").exists());
+    }
     use std::fs::{read_to_string, write};
 
     #[test]
