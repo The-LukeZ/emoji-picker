@@ -1,6 +1,8 @@
-//! Platform-free core: emoji table and asset bundle format.
+//! Platform-free core: emoji table, asset bundle format, hotkey, config and recents.
 
+pub mod config;
 pub mod hotkey;
+pub mod recents;
 pub mod table;
 
 #[cfg(test)]
