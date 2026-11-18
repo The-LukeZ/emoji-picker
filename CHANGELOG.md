@@ -2,9 +2,10 @@
 
 All notable changes to this project are documented here. Entries are written by
 [knope](https://knope.tech) from the files in `.changeset/`.
+
 ## 0.1.0 (2026-11-18)
 
-### Breaking Changes
+### Features
 
 - First release: Twemoji picker with English search, Win+. replacement and game blocklist.
 
