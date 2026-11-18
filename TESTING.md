@@ -130,10 +130,12 @@ logs `insert: foreground first=.. attached=.. second=.. ok=..`. Paste mode is
 - [ ] After a Shift+Enter queue (Shift still held at the final pick), no modifier stays stuck
       and the typed text is unchanged.
 
-Known issues:
+Known issues (also in README "Known issues" and the paste help text in Settings):
 
 - Paste mode: images on the clipboard may be restored slightly wrong (pixels shifted).
   Might get fixed in the future.
+- Paste mode: if Windows blocks the simulated input before Ctrl+V, the previous clipboard
+  content is lost (owner accepted, 2026-11-18).
 
 ## Settings, first-run dialog and About (Task 15)
 

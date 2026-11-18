@@ -34,6 +34,13 @@ Windows does not let a normal app type into a window that runs as administrator.
 windows the emoji is copied to the clipboard instead, and a notification tells you to paste it
 with `Ctrl+V`.
 
+## Known issues
+
+- Paste mode: if an image was on the clipboard, it can come back with shifted pixels after the
+  emoji is pasted.
+- Paste mode: if Windows blocks the simulated input before `Ctrl+V` is sent, the emoji stays on
+  the clipboard and the previous clipboard content is lost.
+
 ## Build from source
 
 Requires Rust (stable) on Windows.

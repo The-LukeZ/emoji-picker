@@ -516,6 +516,12 @@ export component SettingsWindow inherits Window {
                         }
 
                         Text {
+                            text: "Known issues with paste: a copied image can come back with shifted pixels. If Windows blocks the simulated keys before Ctrl+V, the previous clipboard content is lost.";
+                            color: Palette.foreground;
+                            wrap: word-wrap;
+                        }
+
+                        Text {
                             text: "Always paste into these apps:";
                             color: Palette.foreground;
                         }
