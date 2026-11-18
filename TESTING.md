@@ -60,6 +60,12 @@ then the script documents why, releases it, and checks `GetAsyncKeyState` afterw
 modifier pressed must be released, and the test ends by checking that Win, Ctrl, Shift and
 Alt are all up.
 
+Automated runs: the hook ignores injected keys, so `SendInput` cannot drive it. Debug and
+`diag` builds started with `EMOJI_PICKER_HOOK_TEST=1` treat injected keys as physical, except
+keys whose `dwExtraInfo` is the app's own marker `0x454D4F4A` (its VK_E8 mask taps). Test
+scripts must send their keys with `dwExtraInfo = 0`. The log shows
+`ll-hook: test mode, injected keys count as physical` when the mode is on.
+
 - [ ] Win+. opens our picker and the Windows emoji panel does not open.
 - [ ] Releasing Win after Win+. does not open the Start menu.
 - [ ] Win alone still opens the Start menu.

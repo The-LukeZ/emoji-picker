@@ -37,6 +37,20 @@ thread_local! {
     static MATCHER: RefCell<WinPeriodMatcher> = RefCell::new(WinPeriodMatcher::default());
     static ON_OPEN: OnceCell<Box<dyn Fn()>> = const { OnceCell::new() };
     static HOOK: Cell<Option<HHOOK>> = const { Cell::new(None) };
+    /// Test mode (debug and `diag` builds only): see [`TEST_ENV`].
+    static TEST_MODE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// `dwExtraInfo` of every key this app injects ("EMOJ"), so the matcher always ignores it.
+pub const OWN_INPUT_MARKER: usize = 0x454D_4F4A;
+/// Debug and `diag` builds: `EMOJI_PICKER_HOOK_TEST=1` makes the hook treat injected keys as
+/// physical (except our own, marked with [`OWN_INPUT_MARKER`]), so a desktop test can drive
+/// Win+. with `SendInput`. Release builds without `diag` always pass injected keys through.
+const TEST_ENV: &str = "EMOJI_PICKER_HOOK_TEST";
+
+fn test_mode_requested() -> bool {
+    cfg!(any(debug_assertions, feature = "diag"))
+        && std::env::var_os(TEST_ENV).is_some_and(|v| v == "1")
 }
 
 /// Handle to the hook thread. Dropping it removes the hook and stops the thread.
@@ -120,6 +134,10 @@ fn run(
     let mut msg = MSG::default();
     // SAFETY: creates this thread's message queue so posts sent right after `ready` land.
     let _ = unsafe { PeekMessageW(&mut msg, None, WM_APP, WM_APP, PM_NOREMOVE) };
+    if test_mode_requested() {
+        crate::log!("ll-hook: test mode, injected keys count as physical");
+        TEST_MODE.with(|t| t.set(true));
+    }
     ON_OPEN.with(|cell| {
         let _ = cell.set(on_open);
     });
@@ -209,7 +227,7 @@ fn key_input(vk: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
                 wScan: 0,
                 dwFlags: flags,
                 time: 0,
-                dwExtraInfo: 0,
+                dwExtraInfo: OWN_INPUT_MARKER,
             },
         },
     }
@@ -229,7 +247,8 @@ pub fn tap_mask_key() {
 /// Matches one key event. Returns true when the event must be eaten.
 fn on_key(kb: &KBDLLHOOKSTRUCT, wp: WPARAM) -> bool {
     let down = matches!(wp.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
-    let injected = (kb.flags & LLKHF_INJECTED).0 != 0;
+    let own = kb.dwExtraInfo == OWN_INPUT_MARKER;
+    let injected = own || ((kb.flags & LLKHF_INJECTED).0 != 0 && !TEST_MODE.with(|t| t.get()));
     let vk = u16::try_from(kb.vkCode).unwrap_or(0);
     let action = MATCHER.with(|m| match m.try_borrow_mut() {
         Ok(mut m) => m.on_key(vk, down, injected),
