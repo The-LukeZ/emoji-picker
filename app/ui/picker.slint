@@ -1,0 +1,351 @@
+// The emoji picker window. Created once, shown and hidden by `app/src/picker.rs`.
+//
+// Every emoji is an `Image` clipped out of a shared atlas page (`Tile.image`) at
+// `Tile.x/y/w/h` in atlas pixels and drawn at `tile-px` logical pixels.
+
+import { ListView, Palette } from "std-widgets.slint";
+
+export struct Tile {
+    image: image,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    // Position in the visible list (grid), `RECENT_BASE + i` for recents, -1 for no action.
+    index: int,
+}
+
+component TileView inherits Rectangle {
+    in property <Tile> tile;
+    in property <length> cell;
+    in property <length> size;
+    in property <bool> selected;
+    in property <color> hover-color;
+    in property <color> selected-color;
+    callback clicked(bool);
+    callback hovered(bool);
+
+    width: cell;
+    height: cell;
+    border-radius: 4px;
+    background: selected ? selected-color : touch.has-hover ? hover-color : transparent;
+
+    Image {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: root.size;
+        height: root.size;
+        source: root.tile.image;
+        source-clip-x: root.tile.x;
+        source-clip-y: root.tile.y;
+        source-clip-width: root.tile.w;
+        source-clip-height: root.tile.h;
+        image-rendering: smooth;
+    }
+
+    property <bool> shift-down;
+    touch := TouchArea {
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) {
+                root.shift-down = e.modifiers.shift;
+            }
+        }
+        clicked => {
+            root.clicked(root.shift-down);
+        }
+        changed has-hover => {
+            root.hovered(self.has-hover);
+        }
+    }
+}
+
+export component PickerWindow inherits Window {
+    // Inputs from the controller.
+    in property <int> tile-px: 32;
+    in property <int> cols: 9;
+    in property <bool> dark;
+    in property <[[Tile]]> rows;
+    in property <[Tile]> recent;
+    in property <[Tile]> queue;
+    in property <[Tile]> tabs;
+    in property <Tile> tone-tile;
+    in property <bool> recents-on: true;
+    in property <int> category;
+    in property <int> selected;
+    in property <string> hovered-name;
+    in property <int> tone;
+    in-out property <string> query;
+
+    callback query-changed(string);
+    // Key name ("left", "right", "up", "down", "enter", "tab", "escape") and shift.
+    callback key(string, bool);
+    callback tile-clicked(int, bool);
+    // Index as in `tile-clicked`, or -1 when the pointer left the tile.
+    callback tile-hovered(int);
+    callback category-clicked(int);
+    callback tone-clicked();
+    // +1 bigger, -1 smaller (Ctrl+wheel, delivered from the winit event filter).
+    callback zoom(int);
+
+    // Geometry, all derived from `tile-px` so the controller can read the size before layout.
+    out property <length> cell: (tile-px + 8) * 1px;
+    out property <length> pad: 8px;
+    out property <length> font: max(12px, tile-px * 0.4px);
+    out property <length> tab-icon: max(16px, tile-px * 0.6px);
+    out property <length> tab-h: tab-icon + 10px;
+    out property <length> scrollbar: 14px;
+    out property <length> name-h: font * 2;
+    out property <int> grid-rows: 7;
+    out property <length> win-w: pad * 2 + cols * cell + scrollbar;
+    out property <length> win-h: pad * 2 + cell + (recents-on ? cell : 0px) + tab-h + 4px + grid-rows * cell + name-h;
+
+    // Theme (Windows 11 like neutrals).
+    property <color> bg: dark ? #202020 : #f3f3f3;
+    property <color> fg: dark ? #ffffff : #1a1a1a;
+    property <color> dim: dark ? #a0a0a0 : #5f5f5f;
+    property <color> field: dark ? #2d2d2d : #ffffff;
+    property <color> border: dark ? #454545 : #d1d1d1;
+    property <color> hover: dark ? #3a3a3a : #e5e5e5;
+    property <color> sel: dark ? #1f4a6e : #cce4f7;
+    property <color> accent: dark ? #4cc2ff : #005fb8;
+
+    no-frame: true;
+    always-on-top: true;
+    title: "Emoji picker";
+    width: win-w;
+    height: win-h;
+    background: bg;
+    default-font-size: font;
+
+    init => {
+        Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    changed dark => {
+        Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    public function focus-search() {
+        search.focus();
+    }
+
+    public function scroll-to-top() {
+        list.content-y = 0px;
+    }
+
+    // Scrolls the grid so that `row` is fully visible (`ensure-visible` is a builtin name).
+    public function show-row(row: int) {
+        if (row * root.cell + list.content-y < 0px) {
+            list.content-y = -row * root.cell;
+        } else if ((row + 1) * root.cell + list.content-y > list.visible-height) {
+            list.content-y = list.visible-height - (row + 1) * root.cell;
+        }
+    }
+
+    forward-focus: keys;
+
+    keys := FocusScope {
+        capture-key-pressed(e) => {
+            if (e.text == Key.LeftArrow) {
+                root.key("left", e.modifiers.shift);
+                return accept;
+            }
+            if (e.text == Key.RightArrow) {
+                root.key("right", e.modifiers.shift);
+                return accept;
+            }
+            if (e.text == Key.UpArrow) {
+                root.key("up", e.modifiers.shift);
+                return accept;
+            }
+            if (e.text == Key.DownArrow) {
+                root.key("down", e.modifiers.shift);
+                return accept;
+            }
+            if (e.text == Key.Return) {
+                root.key("enter", e.modifiers.shift);
+                return accept;
+            }
+            if (e.text == Key.Tab) {
+                root.key("tab", e.modifiers.shift);
+                return accept;
+            }
+            if (e.text == Key.Backtab) {
+                root.key("tab", true);
+                return accept;
+            }
+            if (e.text == Key.Escape) {
+                root.key("escape", e.modifiers.shift);
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            padding: root.pad;
+            spacing: 0px;
+
+            // Search field and skin tone swatch.
+            HorizontalLayout {
+                height: root.cell;
+                spacing: 6px;
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: root.cell - 6px;
+                    y: 3px;
+                    border-radius: 4px;
+                    background: root.field;
+                    border-width: 1px;
+                    border-color: search.has-focus ? root.accent : root.border;
+
+                    Text {
+                        x: 8px;
+                        visible: root.query == "";
+                        text: "Search emoji";
+                        color: root.dim;
+                        vertical-alignment: center;
+                        height: parent.height;
+                    }
+
+                    search := TextInput {
+                        x: 8px;
+                        width: parent.width - 16px;
+                        height: parent.height;
+                        vertical-alignment: center;
+                        single-line: true;
+                        color: root.fg;
+                        selection-background-color: root.sel;
+                        selection-foreground-color: root.fg;
+                        text <=> root.query;
+                        edited => {
+                            root.query-changed(self.text);
+                        }
+                    }
+                }
+
+                TileView {
+                    tile: root.tone-tile;
+                    cell: root.cell;
+                    size: root.tile-px * 0.8px;
+                    hover-color: root.hover;
+                    selected-color: root.sel;
+                    clicked => {
+                        root.tone-clicked();
+                    }
+                }
+            }
+
+            // Recently used.
+            if root.recents-on: Rectangle {
+                height: root.cell;
+                if root.recent.length == 0: Text {
+                    x: 4px;
+                    height: parent.height;
+                    vertical-alignment: center;
+                    text: "Recently used emoji appear here";
+                    color: root.dim;
+                }
+                for t[i] in root.recent: TileView {
+                    x: i * root.cell;
+                    tile: t;
+                    cell: root.cell;
+                    size: root.tile-px * 1px;
+                    hover-color: root.hover;
+                    selected-color: root.sel;
+                    clicked(shift) => {
+                        root.tile-clicked(t.index, shift);
+                    }
+                    hovered(on) => {
+                        root.tile-hovered(on ? t.index : -1);
+                    }
+                }
+            }
+
+            // Category tabs.
+            Rectangle {
+                height: root.tab-h + 4px;
+                property <length> tab-w: (root.cols * root.cell + root.scrollbar) / 8;
+                for t[i] in root.tabs: Rectangle {
+                    x: i * parent.tab-w;
+                    y: 0px;
+                    width: parent.tab-w;
+                    height: root.tab-h;
+                    border-radius: 4px;
+                    background: tab-touch.has-hover ? root.hover : transparent;
+                    Image {
+                        width: root.tab-icon;
+                        height: root.tab-icon;
+                        source: t.image;
+                        source-clip-x: t.x;
+                        source-clip-y: t.y;
+                        source-clip-width: t.w;
+                        source-clip-height: t.h;
+                        image-rendering: smooth;
+                        opacity: root.query == "" && root.category == i ? 1.0 : 0.6;
+                    }
+                    Rectangle {
+                        visible: root.query == "" && root.category == i;
+                        y: parent.height;
+                        x: (parent.width - self.width) / 2;
+                        width: parent.width * 0.5;
+                        height: 3px;
+                        border-radius: 1.5px;
+                        background: root.accent;
+                    }
+                    tab-touch := TouchArea {
+                        clicked => {
+                            root.category-clicked(i);
+                        }
+                    }
+                }
+            }
+
+            // Multi-pick queue (Shift+Enter, Shift+click).
+            if root.queue.length > 0: Rectangle {
+                height: root.cell;
+                border-radius: 4px;
+                background: root.field;
+                for t[i] in root.queue: TileView {
+                    x: i * root.cell * 0.8;
+                    tile: t;
+                    cell: root.cell * 0.8;
+                    size: root.tile-px * 0.7px;
+                    y: (parent.height - self.height) / 2;
+                    hover-color: transparent;
+                    selected-color: transparent;
+                }
+            }
+
+            // The grid: one category, or the search results. Virtualized by ListView.
+            list := ListView {
+                vertical-stretch: 1;
+                for row in root.rows: Rectangle {
+                    height: root.cell;
+                    for t[i] in row: TileView {
+                        x: i * root.cell;
+                        tile: t;
+                        cell: root.cell;
+                        size: root.tile-px * 1px;
+                        selected: t.index == root.selected;
+                        hover-color: root.hover;
+                        selected-color: root.sel;
+                        clicked(shift) => {
+                            root.tile-clicked(t.index, shift);
+                        }
+                        hovered(on) => {
+                            root.tile-hovered(on ? t.index : -1);
+                        }
+                    }
+                }
+            }
+
+            Text {
+                height: root.name-h;
+                vertical-alignment: center;
+                overflow: elide;
+                text: root.hovered-name;
+                color: root.fg;
+            }
+        }
+    }
+}

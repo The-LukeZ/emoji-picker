@@ -7,8 +7,13 @@ edition.workspace = true
 name = "emoji-picker"
 path = "src/main.rs"
 
+[features]
+# Release diagnostics: stderr logging and the EMOJI_PICKER_SELFTEST open/close driver.
+diag = []
+
 [dependencies]
 emoji-core = { path = "../core" }
+png = "0.18"
 slint = { version = "1.19", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "unstable-winit-030", "raw-window-handle-06"] }
 
 [dependencies.windows]
@@ -22,10 +27,15 @@ features = [
     "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_Accessibility",
+    "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ]
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [build-dependencies]
+slint-build = "1.19.0"
 winresource = "0.1.34"

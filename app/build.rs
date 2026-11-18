@@ -16,5 +16,9 @@ fn main() {
         res.set_icon_with_id(&icon.to_string_lossy(), "1");
         res.compile().expect("embedding the app icon failed");
     }
-    // slint_build::compile is added with the picker UI (Task 12).
+
+    // One root file for every window (ruling R8); the fluent style is fixed so CI matches.
+    let config = slint_build::CompilerConfiguration::new().with_style("fluent".into());
+    slint_build::compile_with_config("ui/app.slint", config)
+        .expect("compiling the Slint UI failed");
 }
