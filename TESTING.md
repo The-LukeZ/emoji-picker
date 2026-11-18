@@ -177,9 +177,12 @@ them in a Git Bash in the repo root. They need the .NET SDK and the `vpk` CLI at
 version as the `velopack` crate in `app/Cargo.toml` (1.2.161):
 
 ```sh
-dotnet tool install vpk --version 1.2.161 --tool-path .superpowers/sdd/2026-11-18-emoji-picker/tools
+export PATH="/c/Program Files/dotnet:$PATH"   # if a fresh shell does not find dotnet
+# --add-source is needed when no NuGet source is configured ("No NuGet sources are defined").
+dotnet tool install vpk --version 1.2.161 --add-source https://api.nuget.org/v3/index.json --tool-path .superpowers/sdd/2026-11-18-emoji-picker/tools
 VPK=.superpowers/sdd/2026-11-18-emoji-picker/tools/vpk
 OUT=.superpowers/sdd/2026-11-18-emoji-picker/pack-test
+rm -rf "$OUT"   # start empty: a later pack overwrites Setup.exe with the newer version
 ```
 
 Pack 0.0.1 and 0.0.2 with a `diag` build, so the update source can be a local folder
@@ -191,7 +194,7 @@ cargo build --release -p emoji-picker --features diag
 mkdir -p target/vpk-pack && cp target/release/emoji-picker.exe target/vpk-pack/
 $VPK pack --packId emoji-picker --packVersion 0.0.1 --packDir target/vpk-pack \
   --mainExe emoji-picker.exe --icon assets/generated/app.ico --outputDir "$OUT"
-ls -l "$OUT"   # emoji-picker-win-Setup.exe: below 30 MB, target 15 MB
+ls -l "$OUT"   # emoji-picker-win-Setup.exe: below 30 MB, target 15 MB (2026-11-18: 30,742,993 bytes)
 ```
 
 - [ ] Run `$OUT/emoji-picker-win-Setup.exe`: it installs to
