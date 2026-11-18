@@ -13,7 +13,7 @@ use std::time::Instant;
 use emoji_core::config::Config;
 use emoji_core::geometry::{Point, Rect};
 use emoji_core::hotkey::Hotkey;
-use emoji_core::policy::{exe_file_name, hotkey_allowed};
+use emoji_core::policy::{exe_file_name, hotkey_allowed, Foreground};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -28,13 +28,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
     GetMessageW, GetSystemMetrics, GetWindowThreadProcessId, LoadIconW, LoadImageW,
     PostQuitMessage, PostThreadMessageW, RegisterClassExW, RegisterWindowMessageW,
-    TranslateMessage, CHILDID_SELF, EVENT_SYSTEM_FOREGROUND, HICON, HWND_MESSAGE, IDI_APPLICATION,
-    IMAGE_ICON, LR_DEFAULTCOLOR, MSG, OBJID_WINDOW, SM_CXSMICON, SM_CYSMICON,
-    WINEVENT_OUTOFCONTEXT, WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_HOTKEY, WNDCLASSEXW,
+    TranslateMessage, CHILDID_SELF, EVENT_OBJECT_LOCATIONCHANGE, EVENT_SYSTEM_FOREGROUND, HICON,
+    HWND_MESSAGE, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTCOLOR, MSG, OBJID_WINDOW, SM_CXSMICON,
+    SM_CYSMICON, WINEVENT_OUTOFCONTEXT, WM_APP, WM_COMMAND, WM_CONTEXTMENU, WM_HOTKEY, WNDCLASSEXW,
     WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
-use super::foreground::{caret_rect, cursor, probe};
+use super::foreground::{caret_rect, cursor, is_window_fullscreen, probe};
 use super::tray::{Tray, CMD_ABOUT, CMD_OPEN_PICKER, CMD_PAUSE, CMD_QUIT, CMD_SETTINGS, WM_TRAY};
 
 /// Class of the message-only window; a second instance finds it with `FindWindowExW`.
@@ -134,6 +134,34 @@ struct Service {
     fail_notified: Cell<bool>,
     /// Last foreground window of another app, the target for "Open picker" from the tray.
     last_target: Cell<isize>,
+    /// Current foreground window and its last probe, so resize events need no exe lookup.
+    fg_hwnd: Cell<isize>,
+    fg: RefCell<Foreground>,
+    /// `EVENT_OBJECT_LOCATIONCHANGE` hook limited to the foreground window's process.
+    location_hook: Cell<Option<HWINEVENTHOOK>>,
+}
+
+/// Out-of-context WinEvent hook for one event, optionally limited to one process.
+fn win_event_hook(event: u32, pid: u32) -> HWINEVENTHOOK {
+    // SAFETY: out-of-context hook; the callback runs on this thread inside GetMessageW.
+    unsafe {
+        SetWinEventHook(
+            event,
+            event,
+            None,
+            Some(on_win_event),
+            pid,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        )
+    }
+}
+
+fn unhook(hook: Option<HWINEVENTHOOK>) {
+    if let Some(hook) = hook.filter(|h| !h.is_invalid()) {
+        // SAFETY: hook was returned by SetWinEventHook on this thread.
+        let _ = unsafe { UnhookWinEvent(hook) };
+    }
 }
 
 thread_local! {
@@ -230,18 +258,7 @@ fn run(
     // SAFETY: static string.
     let taskbar_created = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
     let tray = Tray::new(tray_hwnd, load_icon(hinstance));
-    // SAFETY: out-of-context hook; the callback runs on this thread inside GetMessageW.
-    let hook: HWINEVENTHOOK = unsafe {
-        SetWinEventHook(
-            EVENT_SYSTEM_FOREGROUND,
-            EVENT_SYSTEM_FOREGROUND,
-            None,
-            Some(on_foreground),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        )
-    };
+    let hook = win_event_hook(EVENT_SYSTEM_FOREGROUND, 0);
 
     let svc = Rc::new(Service {
         msg_hwnd,
@@ -255,6 +272,12 @@ fn run(
         registered: Cell::new(false),
         fail_notified: Cell::new(false),
         last_target: Cell::new(0),
+        fg_hwnd: Cell::new(0),
+        fg: RefCell::new(Foreground {
+            exe: None,
+            fullscreen: false,
+        }),
+        location_hook: Cell::new(None),
     });
     SERVICE.with(|s| *s.borrow_mut() = Some(svc.clone()));
     // SAFETY: no arguments.
@@ -266,7 +289,8 @@ fn run(
 
     let mut msg = MSG::default();
     // SAFETY: standard message loop on this thread's queue.
-    while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
+    // GetMessageW returns 0 on WM_QUIT and -1 on error: stop on both.
+    while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
         if msg.hwnd.is_invalid() && msg.message == WM_WAKE {
             svc.drain();
             continue;
@@ -278,10 +302,8 @@ fn run(
     }
 
     svc.unregister();
-    if !hook.is_invalid() {
-        // SAFETY: hook was returned by SetWinEventHook on this thread.
-        let _ = unsafe { UnhookWinEvent(hook) };
-    }
+    unhook(Some(hook));
+    unhook(svc.location_hook.take());
     SERVICE.with(|s| s.borrow_mut().take());
     // Dropping the last Rc drops the Tray, which deletes the icon.
     drop(svc);
@@ -360,17 +382,47 @@ impl Service {
         self.on_foreground(fg);
     }
 
-    /// Registers or releases the hotkey for the new foreground window.
+    /// Probes the new foreground window, follows its resizes, then updates the hotkey.
     fn on_foreground(&self, fg: HWND) {
+        let info = probe(fg);
+        if self.fg_hwnd.replace(fg.0 as isize) != fg.0 as isize {
+            let mut pid = 0u32;
+            // SAFETY: fg comes from the system; a stale one gives pid 0.
+            unsafe { GetWindowThreadProcessId(fg, Some(&mut pid)) };
+            unhook(self.location_hook.take());
+            if pid != 0 {
+                let hook = win_event_hook(EVENT_OBJECT_LOCATIONCHANGE, pid);
+                self.location_hook.set(Some(hook));
+            }
+        }
+        *self.fg.borrow_mut() = info;
+        self.update_hotkey("foreground");
+    }
+
+    /// The foreground window moved or resized (F11, video fullscreen, borderless games).
+    fn on_location_change(&self, hwnd: HWND) {
+        if hwnd.0 as isize != self.fg_hwnd.get() {
+            return;
+        }
+        let fullscreen = is_window_fullscreen(hwnd);
+        if self.fg.borrow().fullscreen == fullscreen {
+            return;
+        }
+        self.fg.borrow_mut().fullscreen = fullscreen;
+        self.update_hotkey("resize");
+    }
+
+    /// Registers or releases the hotkey for the cached foreground state.
+    fn update_hotkey(&self, why: &str) {
         let Some((mods, vk)) = self.combo.get() else {
             self.unregister();
             return;
         };
-        let info = probe(fg);
+        let info = self.fg.borrow().clone();
         let cfg = self.cfg.borrow().clone();
         let allowed = hotkey_allowed(&info, &cfg, self.paused.get());
         crate::log!(
-            "service: foreground {:?} fullscreen={} allowed={allowed}",
+            "service: {why} {:?} fullscreen={} allowed={allowed}",
             info.exe.as_deref().map(exe_file_name),
             info.fullscreen
         );
@@ -452,7 +504,7 @@ fn probe_is_taskbar(hwnd: HWND) -> bool {
     )
 }
 
-unsafe extern "system" fn on_foreground(
+unsafe extern "system" fn on_win_event(
     _hook: HWINEVENTHOOK,
     event: u32,
     hwnd: HWND,
@@ -461,15 +513,19 @@ unsafe extern "system" fn on_foreground(
     _thread: u32,
     _time: u32,
 ) {
-    if event != EVENT_SYSTEM_FOREGROUND
-        || id_object != OBJID_WINDOW.0
-        || id_child != CHILDID_SELF as i32
-    {
+    if id_object != OBJID_WINDOW.0 || id_child != CHILDID_SELF as i32 {
         return;
     }
-    if let Some(svc) = service() {
-        svc.track_target(hwnd);
-        svc.on_foreground(hwnd);
+    let Some(svc) = service() else {
+        return;
+    };
+    match event {
+        EVENT_SYSTEM_FOREGROUND => {
+            svc.track_target(hwnd);
+            svc.on_foreground(hwnd);
+        }
+        EVENT_OBJECT_LOCATIONCHANGE => svc.on_location_change(hwnd),
+        _ => {}
     }
 }
 
@@ -482,7 +538,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_HOTKEY if wp.0 == HOTKEY_ID as usize => {
             // SAFETY: no arguments.
             let fg = unsafe { GetForegroundWindow() };
-            svc.open_picker(fg.0 as isize);
+            // Re-check: the window may have gone fullscreen without an event we acted on.
+            svc.on_foreground(fg);
+            if svc.registered.get() {
+                svc.open_picker(fg.0 as isize);
+            }
         }
         WM_OPEN_SETTINGS => svc.emit(UiEvent::OpenSettings),
         WM_TRAY => match (lp.0 & 0xFFFF) as u32 {

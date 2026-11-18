@@ -101,8 +101,22 @@ fn main() {
     let (config, warning) = Config::load(&config_path);
     log!("config {}: {config:?}", config_path.display());
 
+    // The backend must exist before the service starts: until then
+    // `invoke_from_event_loop` fails with `NoEventLoopProvider` and early events are lost.
+    if let Err(e) = slint::BackendSelector::new()
+        .backend_name("winit".into())
+        .renderer_name("software".into())
+        .select()
+    {
+        log!("selecting the Slint backend failed: {e}");
+        return;
+    }
+
     let service = spawn_service(Arc::new(config), |event| {
-        let _ = slint::invoke_from_event_loop(move || on_ui_event(event));
+        let text = format!("{event:?}");
+        if let Err(e) = slint::invoke_from_event_loop(move || on_ui_event(event)) {
+            log!("ui: dropped {text}: {e}");
+        }
     });
     if let Some(text) = warning {
         service.send(ServiceCmd::Balloon {

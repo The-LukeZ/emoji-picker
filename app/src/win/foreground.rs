@@ -68,7 +68,8 @@ fn is_shell(hwnd: HWND) -> bool {
     hwnd == shell || matches!(class_name(hwnd).as_str(), "Progman" | "WorkerW")
 }
 
-fn fullscreen(hwnd: HWND) -> bool {
+/// True when `hwnd` covers its whole monitor and is not a shell window. Cheap: no exe lookup.
+pub fn is_window_fullscreen(hwnd: HWND) -> bool {
     if hwnd.is_invalid() || is_shell(hwnd) {
         return false;
     }
@@ -94,7 +95,7 @@ fn fullscreen(hwnd: HWND) -> bool {
 pub fn probe(hwnd: HWND) -> Foreground {
     Foreground {
         exe: exe_path(hwnd),
-        fullscreen: fullscreen(hwnd),
+        fullscreen: is_window_fullscreen(hwnd),
     }
 }
 
@@ -103,8 +104,12 @@ pub fn caret_rect(hwnd: HWND) -> Option<Rect> {
     if hwnd.is_invalid() {
         return None;
     }
-    // SAFETY: a stale hwnd gives thread id 0, which GetGUIThreadInfo treats as the foreground thread.
+    // SAFETY: a stale hwnd gives thread id 0.
     let tid = unsafe { GetWindowThreadProcessId(hwnd, None) };
+    // Thread id 0 would make GetGUIThreadInfo report the foreground thread's caret instead.
+    if tid == 0 {
+        return None;
+    }
     let mut info = GUITHREADINFO {
         cbSize: size_of::<GUITHREADINFO>() as u32,
         ..Default::default()
