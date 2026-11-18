@@ -877,6 +877,7 @@ impl Picker {
         const STEPS: u32 = 4;
         let weak = Rc::downgrade(&self.inner);
         let tick = Cell::new(0u32);
+        let start_size = Cell::new(self.inner.cfg().size);
         let open_ms: RefCell<Vec<u32>> = RefCell::new(Vec::new());
         let hidden_kb: RefCell<Vec<usize>> = RefCell::new(Vec::new());
         let open_kb: RefCell<Vec<usize>> = RefCell::new(Vec::new());
@@ -925,6 +926,7 @@ impl Picker {
                             }
                         }
                         3 => {
+                            start_size.set(inner.cfg().size);
                             for _ in 0..3 {
                                 inner.ui.invoke_zoom(1);
                             }
@@ -943,8 +945,13 @@ impl Picker {
                     open_kb.borrow_mut().push(kb());
                     match cycle {
                         3 => {
-                            for _ in 0..3 {
+                            // Zoom up stops at Huge, so step down until the start size again.
+                            while inner.cfg().size != start_size.get() {
+                                let before = inner.cfg().size;
                                 inner.ui.invoke_zoom(-1);
+                                if inner.cfg().size == before {
+                                    break;
+                                }
                             }
                         }
                         4 => {

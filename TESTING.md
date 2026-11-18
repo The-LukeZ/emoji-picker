@@ -36,6 +36,11 @@ by itself (no synthetic keys), logs the same numbers and a summary, then quits.
 - [ ] Clicking the hand swatch cycles the tones and thumbs up changes with it.
 - [ ] No taskbar button and no Alt+Tab entry while the picker is open.
 - [ ] Clicking outside the picker closes it.
-- [ ] Open and close 10 times, then read private bytes from the debug log: hidden < 30 MB,
+- [x] Open and close 10 times, then read private bytes from the debug log: hidden < 30 MB,
       open < 60 MB; median open < 200 ms. Numbers recorded in
-      `.superpowers/sdd/2026-11-18-emoji-picker/spike-results.md`.
+      `.superpowers/sdd/2026-11-18-emoji-picker/spike-results.md`. (Verified 2026-11-18 with
+      `EMOJI_PICKER_SELFTEST=10` on a release `diag` build: opens go through `Picker::open`,
+      not the hotkey, so OS hotkey dispatch is not included.)
+
+Note: pressing the hotkey while the picker is open closes it (toggle, owner decision
+2026-11-18).
